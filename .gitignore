@@ -24,12 +24,18 @@ client_secret*.json
 *.db-shm
 *.sqlite
 *.sqlite3
-data/
+data/*
+!data/.gitkeep
+exports/*
+!exports/.gitkeep
+imports/*
+!imports/.gitkeep
 backups/
 
 # Logs, caches, temporary files
 *.log
-logs/
+logs/*
+!logs/.gitkeep
 __pycache__/
 *.py[cod]
 .pytest_cache/
