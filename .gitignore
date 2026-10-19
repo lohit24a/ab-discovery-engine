@@ -1,0 +1,59 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.key
+*.p12
+*credentials*.json
+*service-account*.json
+*service_account*.json
+token.json
+client_secret*.json
+
+# Local databases and private data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+backups/
+
+# Logs, caches, temporary files
+*.log
+logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.tmp
+*.temp
+*.bak
+*.swp
+~$*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Claude Code local-only settings
+.claude/settings.local.json
