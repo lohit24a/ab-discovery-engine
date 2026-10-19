@@ -1043,3 +1043,35 @@ These are useful if Claude Code needs documentation; you do **not** need to read
 10. Back up the database and allow adapter fixes only after tests.
 
 **You are not expected to write the Python implementation yourself.** Your responsibility is setup, approving access, checking observable outputs and deciding what companies/jobs interest you. Claude Code implements the program; Python performs the repeatable discovery; SQLite remembers; Google Sheets makes review simple.
+
+---
+
+## Appendix: MCP and External Job API Evaluation Backlog — October 2026
+
+**Status:** Future research backlog only. It does **not** change the implementation plan above, and no connector listed here has been installed. The decisions below are planning decisions about what to test, **not** conclusions about data coverage. No connector listed as "Test" has passed validation. The original source priorities (Feashliaa as a supplementary feed, JobSpy, YC and investor boards) are unchanged.
+
+| Connector | Decision | When to evaluate | Reason |
+|---|---|---|---|
+| Indeed official MCP | Test; possibly retain for Claude-assisted discovery | Source integration stage | Official interactive job search; India coverage, pagination and incremental value need verification |
+| JobDataLake | Test MCP and REST API | Source integration stage | Potentially useful low-cost employer-job data and structured descriptions; assess overlap with Feashliaa |
+| JobsPipe | Test free allowance before considering paid access | After baseline sources work | Normalized multi-source job data; paid subscription justified only by unique relevant discoveries |
+| Jobs by Workable | Test for incremental ATS coverage | After baseline sources | May expose employers missing from other feeds |
+| Job Hunt Copilot (India) | Reference or reuse search-query ideas; do not install as another workflow | If Indian-source coverage gaps remain | India-relevant sources, but no verified replacement for our persistent discovery engine |
+| Job Hunt HQ | Reference only | No installation required | Local tracking concepts overlap with SQLite and Google Sheets |
+| Greenhouse MCP | Do not install for this use case | Not planned | Designed for authorized employer recruiting accounts; continue using public Greenhouse Job Board APIs |
+| Develop21 Career Coach and job tracker | Do not install | Not planned | Duplicates our tracking, profile and review workflows |
+| Remaining unrelated job/business connectors | Do not install | Not planned | No demonstrated contribution to A+B discovery |
+
+### Evaluation criteria for future experiments
+
+Judge each tested connector on:
+
+1. Unique relevant Bengaluru / India-remote jobs discovered (beyond sources already enabled).
+2. Coverage of our 18 October benchmark vacancies.
+3. Accuracy of employer, location and experience requirements.
+4. Posting freshness and completeness.
+5. Access limits and operating cost.
+6. Whether Python can use a documented API independently of Claude.
+7. Whether the source can be used repeatedly and reliably.
+
+A connector usable only interactively through Claude cannot become part of the scheduled-free, Python-authoritative `/run-discovery` pipeline unless criterion 6 is met; any such use must be proposed and approved before implementation, consistent with `CLAUDE.md`.
