@@ -166,5 +166,27 @@ PRAGMA user_version = 1;
 COMMIT;
 """
 
-MIGRATIONS = [MIGRATION_1]
+# v2: cross-source job identity (employer requisition ID) and closure-evidence guard.
+MIGRATION_2 = """
+BEGIN;
+
+ALTER TABLE jobs ADD COLUMN requisition_id TEXT
+    CHECK (requisition_id IS NULL OR length(trim(requisition_id)) > 0);
+-- One requisition ID identifies one job at one company; identical titles stay distinct.
+CREATE UNIQUE INDEX ux_jobs_company_requisition
+    ON jobs(company_id, requisition_id) WHERE requisition_id IS NOT NULL;
+
+-- Not Seen / Closed may only be recorded with a successful AND complete source check as
+-- evidence. Failed, partial, skipped or missing evidence can never close a job.
+CREATE TRIGGER trg_status_events_absence_evidence BEFORE INSERT ON status_events
+WHEN NEW.new_state IN ('Not Seen', 'Closed') AND NOT EXISTS (
+    SELECT 1 FROM source_checks
+    WHERE check_id = NEW.source_check_id AND outcome = 'success' AND complete = 1)
+BEGIN SELECT RAISE(ABORT, 'Not Seen/Closed requires a successful complete source check'); END;
+
+PRAGMA user_version = 2;
+COMMIT;
+"""
+
+MIGRATIONS = [MIGRATION_1, MIGRATION_2]
 SCHEMA_VERSION = len(MIGRATIONS)

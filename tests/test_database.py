@@ -272,7 +272,7 @@ def test_doctor_passes_on_initialized_database(tmp_path, monkeypatch):
     results = cli.run_checks(root)
     messages = " | ".join(m for _, m in results)
     assert cli.FAIL not in [s for s, _ in results]
-    assert "Schema version 1 is supported" in messages
+    assert f"Schema version {SCHEMA_VERSION} is supported" in messages
     assert "All 8 application tables exist" in messages
     assert "Foreign-key enforcement is enabled" in messages
 
