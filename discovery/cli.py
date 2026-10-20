@@ -349,6 +349,221 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _configure_restricted_policy(parser):
+    pass
+
+
+def cmd_restricted_policy(args) -> int:
+    from . import restricted_policy as rp
+
+    try:
+        policies = rp.load_policy()
+    except rp.PolicyError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+    print("Restricted job boards (source of truth: config/restricted_sources.json). They NEVER run in normal discovery;")
+    print("each live execution needs your own interactive confirmation of the exact scope below.")
+    for name, p in policies.items():
+        state = "ENABLED (still needs approval per run)" if p.enabled else "disabled"
+        print(f"- {name}: {state} | terms {list(p.approved_search_terms)} | locations {list(p.approved_locations)} | "
+              f"<= {p.max_searches_per_run} searches x {p.max_results_per_search} results | request budget {p.request_budget} | "
+              f"<= {p.max_duration_seconds}s | delay >= {p.min_delay_seconds}s | enrichment {'on' if p.allow_description_fetch else 'off'} "
+              f"| Sheets publication {'on' if p.allow_sheets_publication else 'blocked'}")
+    return 0
+
+
+def _configure_restricted_collect(parser):
+    parser.add_argument("--sources", required=True, help="restricted sources to contact, named one by one, e.g. indeed,naukri")
+    parser.add_argument("--search", action="append", metavar="TERM",
+                        help="narrow to an approved search term (repeatable); anything not approved is rejected")
+    parser.add_argument("--results", type=int, help="requested results per search (cannot exceed the policy maximum)")
+    parser.add_argument("--enable-for-this-run", action="store_true",
+                        help="enable the named source in memory for this one execution (the policy file stays disabled)")
+    parser.add_argument("--attest-provider-authorization", action="store_true",
+                        help="record that the operator states the provider authorization exists and covers VPN egress "
+                             "(needed for sources marked not_established)")
+    parser.add_argument("--approve-plan", metavar="CODE",
+                        help="run the plan the operator approved in chat, identified by the code `restricted-plan` printed")
+
+
+def _run_override(args):
+    if getattr(args, "attest_provider_authorization", False) and not getattr(args, "enable_for_this_run", False):
+        from . import restricted_policy as rp
+        raise rp.PolicyError("--attest-provider-authorization only applies together with --enable-for-this-run")
+    if not getattr(args, "enable_for_this_run", False):
+        return {}
+    from . import restricted_policy as rp
+    return {n: {"attest": bool(args.attest_provider_authorization)} for n in rp.parse_source_names(args.sources)}
+
+
+def _configure_restricted_plan(parser):
+    _configure_restricted_collect(parser)
+    parser.add_argument("--cancel", action="store_true", help="discard every plan awaiting approval")
+
+
+def cmd_restricted_plan(args, vpn_check=None, policy_path=None, pending_dir=None) -> int:
+    """Display the exact plan, run the VPN preflight, and record it as awaiting the operator's approval in chat.
+
+    Contacts no provider and writes nothing but the pending-plan record. Approval happens in the chat and is then
+    passed back to `restricted-collect --approve-plan CODE`.
+    """
+    from . import network_guard, restricted_policy as rp
+    from .adapters import jobspy_source as js
+    if getattr(args, "cancel", False):
+        print(f"Discarded {rp.cancel_pending(pending_dir)} pending plan(s).")
+        return 0
+    try:
+        names = rp.parse_source_names(args.sources)
+        unsupported = [n for n in names if n not in js.IMPLEMENTED]
+        if unsupported:
+            raise rp.PolicyError(f"{', '.join(unsupported)}: no approved live implementation or scope yet")
+        override = _run_override(args)
+        policies = rp.load_policy(policy_path or rp.POLICY_PATH, override)
+        plan = rp.build_plan(policies, names, terms=args.search, results=args.results)
+        print("\n".join(rp.describe_plan(plan, policies, override)))
+        result = (vpn_check or network_guard.require_vpn)()
+        for line in getattr(result, "lines", lambda: [])():
+            print(line)
+    except network_guard.NetworkGuardError as exc:
+        print(f"[BLOCKED] {exc}. No provider was contacted and no plan was recorded.")
+        return 5
+    except rp.PolicyError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    record = rp.save_pending(plan, override, directory=pending_dir)
+    flags = (" --enable-for-this-run" if override else "") + (" --attest-provider-authorization" if any(
+        v.get("attest") for v in override.values()) else "")
+    for opt, val in (("--search", t) for t in (args.search or [])):
+        flags += f' {opt} "{val}"'
+    if args.results is not None:
+        flags += f" --results {args.results}"
+    print(f"\nPLAN CODE: {record['code']}  (valid {rp.PLAN_TTL_SECONDS // 60} minutes, single use)")
+    print("Nothing has been sent to any provider. Waiting for the operator's explicit approval message in the chat.")
+    print(f"After approval: python -m discovery restricted-collect --sources {args.sources}{flags} --approve-plan {record['code']}")
+    return 0
+
+
+def cmd_restricted_collect(args, console=None, vpn_check=None, scrape=None, policy_path=None, snapshot_dir=None,
+                           sleep=None, db_path=None, pending_dir=None) -> int:
+    """Phase A: needs the operator's interactive confirmation; writes only a temporary snapshot file."""
+    import time as _time
+
+    from . import database, network_guard, restricted_policy as rp
+    from .adapters import jobspy_source as js
+
+    try:
+        names = rp.parse_source_names(args.sources)
+        unsupported = [n for n in names if n not in js.IMPLEMENTED]
+        if unsupported:
+            raise rp.PolicyError(f"{', '.join(unsupported)}: no approved live implementation or scope yet")
+        override = _run_override(args)
+        policies = rp.load_policy(policy_path or rp.POLICY_PATH, override)
+        plan = rp.build_plan(policies, names, terms=args.search, results=args.results)
+        if getattr(args, "approve_plan", None):
+            auth = rp.authorize_from_chat(plan, override, args.approve_plan, directory=pending_dir, vpn_check=vpn_check)
+        else:
+            auth = rp.authorize_interactively(plan, policies, console=console, vpn_check=vpn_check)
+        policies = rp.load_policy(policy_path or rp.POLICY_PATH, override)   # reload: a changed policy voids the authorization
+        plan = rp.build_plan(policies, names, terms=args.search, results=args.results)
+        snapshot = js.collect_snapshot(plan, auth, policies, scrape=scrape, vpn_check=vpn_check or network_guard.require_vpn,
+                                       sleep=sleep or _time.sleep)
+    except rp.NonInteractiveError as exc:
+        print(f"[BLOCKED] {exc}")
+        return 3
+    except rp.AuthorizationError as exc:
+        print(f"[BLOCKED] {exc}")
+        return 4
+    except network_guard.NetworkGuardError as exc:
+        print(f"[BLOCKED] {exc}. No provider was contacted.")
+        return 5
+    except rp.PolicyError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    path = js.write_snapshot(snapshot, snapshot_dir)
+    js.append_audit({"ts": snapshot["finished_at"], "action": "collect", "sources": snapshot["sources"],
+                     "plan": snapshot["plan_fingerprint"][:16],
+                     "approval": "chat" if getattr(args, "approve_plan", None) else "terminal",
+                     "run_override": bool(getattr(args, "enable_for_this_run", False)), "outcomes": [(o["source"], o["status"], o["rows"], o["requests_used"])
+                                                                              for o in snapshot["outcomes"]]})
+    conn = None
+    try:
+        path_db = db_path or database.resolve_db_path(PROJECT_ROOT)
+        if path_db.is_file():
+            conn = database.connect(path_db, readonly=True)
+        print("\n".join(js.preview(conn, snapshot)))
+        for o in snapshot["outcomes"]:
+            for t in o.get("trace", []):
+                print(f"    request {t['stage']}: {t['method']} {t['host']}{t['path']} -> HTTP {t['status']}"
+                      + (f" server={t['server']}" if t.get("server") else ""))
+    finally:
+        if conn:
+            conn.close()
+    print(f"\nSnapshot saved (temporary, git-ignored): {path}")
+    print("Nothing was written to SQLite, Google Sheets TEST or LIVE. Importing needs a separate approval: "
+          "python -m discovery restricted-import --snapshot <file>")
+    return 0 if all(o["status"] in ("success", "skipped") for o in snapshot["outcomes"]) else 2
+
+
+def _configure_restricted_import(parser):
+    parser.add_argument("--snapshot", required=True, help="snapshot file written by restricted-collect")
+    parser.add_argument("--dry-run", action="store_true", help="show the preview and expected database changes only")
+
+
+def cmd_restricted_import(args, console=None, policy_path=None, db_path=None, backup_dir=None) -> int:
+    """Phase B: no provider is contacted; needs its own interactive confirmation (not for --dry-run)."""
+    from . import database, restricted_policy as rp
+    from .adapters import jobspy_source as js
+    from .schema import SCHEMA_VERSION
+
+    try:
+        snapshot = js.load_snapshot(args.snapshot)
+        policies = rp.load_policy(policy_path or rp.POLICY_PATH)
+        plan = rp.build_plan(policies, snapshot["sources"], action="import", extra=snapshot["records_sha256"])
+        path_db = db_path or database.resolve_db_path(PROJECT_ROOT)
+        if not path_db.is_file():
+            raise rp.PolicyError("database not initialized; run: python -m discovery init-db")
+        ro = database.connect(path_db, readonly=True)
+        try:
+            print("\n".join(js.preview(ro, snapshot)))
+            version = database.get_schema_version(ro)
+        finally:
+            ro.close()
+        if args.dry_run:
+            print("\nDRY RUN: no confirmation asked, nothing written.")
+            return 0
+        if version != SCHEMA_VERSION:
+            raise rp.PolicyError("database schema is out of date; back it up and run init-db first")
+        auth = rp.authorize_interactively(plan, policies, console=console)
+        policies = rp.load_policy(policy_path or rp.POLICY_PATH)
+        plan = rp.build_plan(policies, snapshot["sources"], action="import", extra=snapshot["records_sha256"])
+        auth.begin(plan)
+    except rp.NonInteractiveError as exc:
+        print(f"[BLOCKED] {exc}")
+        return 3
+    except rp.AuthorizationError as exc:
+        print(f"[BLOCKED] {exc}")
+        return 4
+    except rp.PolicyError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    try:
+        backup = js.verified_backup(path_db, backup_dir)
+        conn = database.connect(path_db)
+        try:
+            counts = js.import_snapshot(conn, snapshot)
+        finally:
+            conn.close()
+    finally:
+        auth.finish()
+    js.append_audit({"ts": database.utc_now(), "action": "import", "sources": snapshot["sources"],
+                     "snapshot": snapshot["records_sha256"][:16], "created": counts.jobs_created})
+    print(f"Verified backup: {backup.name}")
+    print(f"Imported: jobs created {counts.jobs_created}, attached to existing jobs {counts.attached_to_existing}, "
+          f"already seen {counts.already_seen}, companies created {counts.companies_created}, ambiguous skipped "
+          f"{counts.skipped_identity}. Nothing was published to Google Sheets.")
+    return 0
+
+
 # Register new subcommands here: name -> (help text, handler, optional argument configurer)
 COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
@@ -359,6 +574,13 @@ COMMANDS = {
                          _configure_import_yc),
     "run": ("Run the requested sources and preview/apply the TEST sync (manual, one report)", cmd_run, _configure_run),
     "report": ("Show the consolidated report of a recorded discovery run", cmd_report, _configure_report),
+    "restricted-policy": ("Show the restricted job-board policy (read-only)", cmd_restricted_policy, _configure_restricted_policy),
+    "restricted-plan": ("Display a restricted-source plan and record it for chat approval (contacts nothing)",
+                        cmd_restricted_plan, _configure_restricted_plan),
+    "restricted-collect": ("Phase A: collect from restricted boards after YOUR interactive approval", cmd_restricted_collect,
+                           _configure_restricted_collect),
+    "restricted-import": ("Phase B: import a saved restricted snapshot after YOUR interactive approval", cmd_restricted_import,
+                          _configure_restricted_import),
 }
 
 

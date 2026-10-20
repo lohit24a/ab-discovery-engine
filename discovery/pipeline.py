@@ -31,10 +31,28 @@ class PipelineError(Exception):
     """The run cannot start safely. Nothing was changed."""
 
 
+RESTRICTED = ("indeed", "naukri", "linkedin", "jobspy")
+RETIRED = ("glassdoor", "jobspy_glassdoor")      # removed from the project (decision D-23)
+
+
+def _reject_restricted(names):
+    retired = [n for n in names if n in RETIRED]
+    if retired:
+        raise PipelineError(f"{', '.join(retired)} is an unsupported source: it was retired from this project "
+                            "(decision D-23) and cannot be run.")
+    bad = [n for n in names if n in RESTRICTED or n in ("all", "*") or "*" in n]
+    if bad:
+        raise PipelineError(
+            f"{', '.join(bad)} cannot be part of a normal run. Indeed, Naukri and LinkedIn are restricted "
+            "sources: they only run through 'restricted-collect', which needs the operator's interactive approval "
+            "for each execution. 'all' and wildcards are never accepted.")
+
+
 def parse_sources(text):
     names = [s.strip().lower() for s in (text or "").split(",") if s.strip()]
     if not names:
         raise PipelineError("No sources requested; use --sources yc,feashliaa")
+    _reject_restricted(names)
     unknown = [n for n in names if n not in SOURCE_ORDER]
     if unknown:
         raise PipelineError(f"Unknown source(s): {', '.join(unknown)}. Available: {', '.join(SOURCE_ORDER)}")
@@ -182,6 +200,9 @@ def run_pipeline(conn, *, sources, target="test", dry_run=False, apply_sync=Fals
     if apply_sync and (dry_run or target is None):
         raise PipelineError("--apply-sync needs a real (non dry-run) run with --target test")
     sources = list(sources)
+    _reject_restricted([s.lower() for s in sources])   # internal callers cannot slip restricted sources into a run
+    if any(s not in SOURCE_ORDER for s in sources):
+        raise PipelineError("Unknown source in run request")
     _check_health(conn)
     clock = time.monotonic()
     now = now or db.utc_now()

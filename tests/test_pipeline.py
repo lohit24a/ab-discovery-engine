@@ -319,6 +319,8 @@ def test_dry_run_changes_neither_sqlite_nor_the_sheet(conn):
 
 def test_unknown_sources_and_schema_problems_stop_before_any_change(conn):
     with pytest.raises(pipeline.PipelineError, match="Unknown source"):
+        pipeline.parse_sources("yc,someboard")
+    with pytest.raises(pipeline.PipelineError, match="restricted"):
         pipeline.parse_sources("yc,jobspy")
     with pytest.raises(pipeline.PipelineError, match="No sources"):
         pipeline.parse_sources("")

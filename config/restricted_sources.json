@@ -1,0 +1,88 @@
+{
+  "_comment": "SOURCE OF TRUTH for restricted job boards (Indeed, Naukri, LinkedIn). They never run as part of normal discovery. Every live run needs a fresh interactive confirmation by the operator that is bound to the exact scope below; this file only defines the maximum scope. Limits here are for initial integration testing; widening any value needs explicit operator approval and a documented change. A changed value invalidates any pending authorization. enabled=false means the source cannot even be proposed for a run. provider_authorization must be 'operator_confirmed' (with authorization_covers_vpn_egress true) before a source can be planned; LinkedIn is recorded as not_established until the operator supplies the provider's written authorization reference and explicitly approves the test. base_requests_per_search is the number of requests one search needs by design (1 for all three sources). Glassdoor was retired from the project on 2026-10-20 (see docs/source_audits/jobspy.md).",
+  "sources": {
+    "indeed": {
+      "enabled": false,
+      "provider_authorization": "operator_confirmed",
+      "authorization_covers_vpn_egress": true,
+      "authorization_reference": "",
+      "approved_search_terms": [
+        "associate product manager",
+        "business analyst"
+      ],
+      "approved_locations": [
+        "Bengaluru, Karnataka, India"
+      ],
+      "country": "India",
+      "max_searches_per_run": 2,
+      "max_results_per_search": 10,
+      "base_requests_per_search": 1,
+      "max_pagination_requests": 0,
+      "max_enrichment_requests": 0,
+      "request_budget": 2,
+      "max_duration_seconds": 120,
+      "min_delay_seconds": 5,
+      "access_method": "jobspy_python_api",
+      "requires_vpn": true,
+      "allow_description_fetch": false,
+      "allow_import": true,
+      "allow_sheets_publication": false,
+      "retries_after_restriction": 0
+    },
+    "naukri": {
+      "enabled": false,
+      "provider_authorization": "operator_confirmed",
+      "authorization_covers_vpn_egress": true,
+      "authorization_reference": "",
+      "approved_search_terms": [
+        "associate product manager",
+        "business analyst"
+      ],
+      "approved_locations": [
+        "Bengaluru"
+      ],
+      "country": "India",
+      "max_searches_per_run": 2,
+      "max_results_per_search": 10,
+      "base_requests_per_search": 1,
+      "max_pagination_requests": 0,
+      "max_enrichment_requests": 0,
+      "request_budget": 2,
+      "max_duration_seconds": 120,
+      "min_delay_seconds": 5,
+      "access_method": "jobspy_python_api",
+      "requires_vpn": true,
+      "allow_description_fetch": false,
+      "allow_import": true,
+      "allow_sheets_publication": false,
+      "retries_after_restriction": 0
+    },
+    "linkedin": {
+      "enabled": false,
+      "provider_authorization": "not_established",
+      "authorization_covers_vpn_egress": false,
+      "authorization_reference": "",
+      "approved_search_terms": [
+        "business analyst"
+      ],
+      "approved_locations": [
+        "Bengaluru, India"
+      ],
+      "country": null,
+      "max_searches_per_run": 1,
+      "max_results_per_search": 5,
+      "base_requests_per_search": 1,
+      "max_pagination_requests": 0,
+      "max_enrichment_requests": 0,
+      "request_budget": 1,
+      "max_duration_seconds": 60,
+      "min_delay_seconds": 5,
+      "access_method": "jobspy_python_api",
+      "requires_vpn": true,
+      "allow_description_fetch": false,
+      "allow_import": false,
+      "allow_sheets_publication": false,
+      "retries_after_restriction": 0
+    }
+  }
+}
