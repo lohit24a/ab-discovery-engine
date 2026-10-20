@@ -1,0 +1,464 @@
+# Search profile for the A+B Discovery Engine.
+#
+# STATUS: PROPOSED for operator review (Day 12, checkpoint 1). Every term below is an editable proposal built from the
+# eight role families in the implementation guide. Nothing here is a final career preference. Edit freely; the loader
+# validates the file and refuses unknown keys, so a typo is an error, not a silent change.
+#
+# Conventions
+#   * Matching is case-insensitive on whole words/phrases of the TITLE (and, when present, saved description text).
+#   * strong_aliases: a title containing one is strong evidence of the family.
+#   * weak_aliases:   generic titles (for example "business analyst"). They only count when corroborated by a
+#                     corroborating term in the title, or by company_context_terms found in the company's own
+#                     recorded description. Uncorroborated weak matches are held for review, never auto-approved.
+#   * negative_title_terms: titles that look like a different job. They apply a soft penalty (see ranking.yaml);
+#                     only the hard exclusions listed under `hard_exclusions` remove a record from the shortlist.
+#   * responsibility_signals: used only when a description text exists (manual imports). The database does not
+#                     store job descriptions from the automated sources, so these cannot score those records.
+#
+# Supported YAML subset (so the file can be read without extra packages): nested mappings, lists written either as
+# "- item" lines or [a, b, "c d"], quoted or plain strings, numbers, true/false/null, and # comments.
+
+version: 1
+status: proposed_for_operator_review
+
+role_types:
+  - ai_implementation
+  - founders_office
+  - gtm_engineering
+  - forward_deployed_solutions
+  - associate_product_ops
+  - internal_ai_automation
+  - business_finance_ops
+  - venture_studio
+
+role_families:
+  ai_implementation:
+    label: "AI implementation"
+    meaning: "Deploy, configure or roll out AI products and workflows for customers or the business"
+    strong_aliases:
+      - "ai implementation"
+      - "ai solutions engineer"
+      - "ai solutions consultant"
+      - "ai consultant"
+      - "applied ai"
+      - "ai deployment"
+      - "ai enablement"
+      - "ai transformation"
+      - "ai adoption"
+      - "genai solutions"
+      - "generative ai solutions"
+      - "llm solutions"
+      - "ai customer success"
+      - "ai delivery"
+      - "ai specialist"
+      - "ai associate"
+      - "ai analyst"
+    weak_aliases:
+      - "implementation engineer"
+      - "implementation specialist"
+      - "implementation consultant"
+      - "implementation manager"
+      - "implementation analyst"
+      - "solutions consultant"
+      - "customer success engineer"
+      - "technical consultant"
+    corroborating_terms: [ai, "artificial intelligence", genai, "generative ai", llm, "machine learning", agent, agentic, copilot, automation]
+    company_context_terms: ["artificial intelligence", "generative ai", llm, "machine learning", "ai-powered", "ai agents", "ai platform"]
+    negative_title_terms: ["research scientist", "research engineer", "machine learning engineer", "ml engineer", "data scientist", "software engineer", backend, frontend, "full stack", devops, sre, "security engineer", recruiter, "account executive"]
+    responsibility_signals: ["customer onboarding", deploy, integrate, workflow, stakeholder, requirements, prompt, pilot, rollout, enablement]
+
+  founders_office:
+    label: "Founder's office / chief of staff"
+    meaning: "Generalist operator working directly with founders on strategy, operations and special projects"
+    strong_aliases:
+      - "founders office"
+      - "founder's office"
+      - "founders' office"
+      - "chief of staff"
+      - "founders associate"
+      - "founder associate"
+      - "associate to the founder"
+      - "special projects"
+      - "strategy and operations"
+      - "strategy & operations"
+      - "founding operations"
+      - "founding associate"
+      - "office of the ceo"
+      - "ceo office"
+    weak_aliases:
+      - "strategy associate"
+      - "strategy analyst"
+      - "business operations"
+      - bizops
+      - "operations associate"
+      - "program manager"
+      - "growth associate"
+      - generalist
+    corroborating_terms: [founder, founding, startup, ceo, "special projects", "0 to 1", "zero to one"]
+    company_context_terms: []
+    negative_title_terms: ["account executive", recruiter, "software engineer"]
+    responsibility_signals: ["work directly with", "founder", "cross-functional", "strategy", "operating cadence", "special projects"]
+
+  gtm_engineering:
+    label: "GTM engineering"
+    meaning: "Build the systems, automations and data that run go-to-market"
+    strong_aliases:
+      - "gtm engineer"
+      - "go-to-market engineer"
+      - "gtm engineering"
+      - "growth engineer"
+      - "revenue operations engineer"
+      - "gtm operations"
+      - "gtm automation"
+      - "sales automation"
+      - "growth operations"
+      - "revenue engineer"
+      - "gtm analyst"
+      - "gtm associate"
+      - "gtm specialist"
+    weak_aliases:
+      - "revenue operations"
+      - revops
+      - "sales operations"
+      - "marketing operations"
+      - "growth analyst"
+      - "growth manager"
+      - "demand generation"
+    corroborating_terms: [automation, engineer, ai, data, tools, systems, workflow, gtm]
+    company_context_terms: []
+    negative_title_terms: ["account executive", sdr, bdr, "sales development representative", telesales, "field sales", recruiter]
+    responsibility_signals: [crm, "lead routing", enrichment, outbound, pipeline, attribution, automation]
+
+  forward_deployed_solutions:
+    label: "Forward-deployed / solutions"
+    meaning: "Customer-embedded technical delivery and solutions roles"
+    strong_aliases:
+      - "forward deployed"
+      - "forward-deployed"
+      - fde
+      - "deployment strategist"
+      - "deployed engineer"
+      - "customer engineer"
+      - "solutions engineer"
+      - "technical solutions"
+      - "applied engineer"
+    weak_aliases:
+      - "solutions architect"
+      - "technical account manager"
+      - "customer success engineer"
+      - "implementation engineer"
+      - "sales engineer"
+      - "pre-sales"
+      - presales
+    corroborating_terms: [ai, software, technical, customer, deployment, integration, saas]
+    company_context_terms: []
+    negative_title_terms: ["account executive", recruiter, "support agent", "customer support"]
+    responsibility_signals: ["customer site", integration, "technical discovery", poc, "proof of concept", onboarding, "solution design"]
+
+  associate_product_ops:
+    label: "Associate product / product operations"
+    meaning: "Early-career product management and product operations"
+    strong_aliases:
+      - "associate product manager"
+      - apm
+      - "product operations"
+      - "product ops"
+      - "associate product"
+      - "product analyst"
+      - "associate program manager"
+      - "product associate"
+      - "junior product manager"
+      - "product manager trainee"
+    weak_aliases:
+      - "product manager"
+      - "program manager"
+      - "business analyst"
+      - "product owner"
+    corroborating_terms: [associate, junior, "entry level", "entry-level", graduate, trainee, apm, operations]
+    company_context_terms: []
+    negative_title_terms: ["product marketing", "product designer", "product security", recruiter]
+    responsibility_signals: ["product roadmap", "user research", "prioritization", "stakeholder", "requirements", "metrics", "experimentation"]
+
+  internal_ai_automation:
+    label: "Internal AI / automation"
+    meaning: "Automate internal operations with AI and low-code tooling"
+    strong_aliases:
+      - "ai automation"
+      - "automation specialist"
+      - "workflow automation"
+      - "process automation"
+      - "intelligent automation"
+      - "no-code"
+      - "low-code"
+      - "ai operations"
+      - "business automation"
+      - "automation analyst"
+      - "ai workflow"
+      - "agent operations"
+      - "ops automation"
+      - rpa
+    weak_aliases:
+      - "automation engineer"
+      - "business systems analyst"
+      - "business systems"
+      - "internal tools"
+      - "systems analyst"
+    corroborating_terms: [ai, automation, workflow, operations, "no-code", internal, process]
+    company_context_terms: []
+    negative_title_terms: ["test automation", "qa automation", sdet, "network automation", devops, "quality assurance"]
+    responsibility_signals: [zapier, n8n, "power automate", workflow, "internal tools", "process mapping", prompt, "ops teams"]
+
+  business_finance_ops:
+    label: "Business / finance operations"
+    meaning: "Business finance, strategic finance and operations analysis at product companies"
+    strong_aliases:
+      - "business finance"
+      - "finance operations"
+      - "fp&a"
+      - "financial planning and analysis"
+      - "financial planning & analysis"
+      - "strategic finance"
+      - "finance business partner"
+      - "business operations"
+      - "finance associate"
+    weak_aliases:
+      - "financial analyst"
+      - "finance analyst"
+      - "business analyst"
+      - "operations analyst"
+      - analyst
+      - "finance manager"
+    corroborating_terms: [finance, business, strategy, operations, "fp&a", planning, revenue, startup]
+    company_context_terms: []
+    negative_title_terms: [audit, tax, "accounts payable", "accounts receivable", accountant, "chartered accountant", payroll, "credit analyst", "equity research", "investment banking"]
+    responsibility_signals: [budgeting, forecasting, "financial model", "variance", "unit economics", "board reporting", "business case"]
+
+  venture_studio:
+    label: "Venture studio / incubation"
+    meaning: "Company-building, incubation and early-stage venture roles"
+    strong_aliases:
+      - "venture studio"
+      - "venture builder"
+      - "entrepreneur in residence"
+      - "entrepreneur-in-residence"
+      - eir
+      - "startup studio"
+      - "venture associate"
+      - "venture capital associate"
+      - "venture analyst"
+      - incubation
+      - "founder in residence"
+      - "founder-in-residence"
+      - "investment associate"
+    weak_aliases:
+      - "investment analyst"
+      - "research associate"
+      - ecosystem
+      - "portfolio operations"
+      - "platform associate"
+    corroborating_terms: [venture, startup, founder, portfolio, vc, studio, early-stage]
+    company_context_terms: []
+    negative_title_terms: ["private equity", "investment banking", "equity research", "credit analyst", wealth, "mutual fund"]
+    responsibility_signals: ["deal sourcing", "market mapping", "founder", "portfolio", "company building", "0 to 1", "due diligence"]
+
+location:
+  onsite_or_hybrid_cities: [Bengaluru, Bangalore, "Bangalore Urban", Bengalooru, Banglore, Bengalore, Bangaluru]
+  remote_country: India
+  # "India remote" must be stated; plain "Remote" never means India-eligible.
+  india_remote_phrases: ["remote india", "india remote", "remote - india", "remote (india)", "india (remote)", "work from anywhere in india", "pan india remote", "remote, india"]
+  generic_remote_terms: [remote, "work from home", wfh, anywhere, distributed]
+  # A literal worldwide / global-remote statement does include India in its words, but employers often restrict it in
+  # practice. plausible = held for review (default); confirmed = treated like an explicit India remote.  OPERATOR DECISION.
+  worldwide_remote: plausible
+  worldwide_phrases: ["worldwide", "world wide", "global remote", "remote global", "remote, global", "anywhere in the world", "work from anywhere", "any location"]
+  # Regions that contain India: remote limited to them is plausible, never confirmed.
+  india_inclusive_regions: [apac, "asia pacific", "south asia", asia]
+  # What to do with an India city that is not Bengaluru (Pune, Mumbai, ...): needs_review | incompatible.  OPERATOR DECISION.
+  other_india_cities: needs_review
+  # Extra foreign evidence on top of the built-in list. A foreign-only record is explicitly incompatible; an
+  # India-headquartered company can still advertise foreign-only roles, so this judges the POSTING, never the company.
+  foreign_markers: ["united states", usa, "u.s.", "us only", "us-based", "north america", uk, "united kingdom", england, london, canada, toronto, germany, berlin, france, paris, ireland, dublin, netherlands, amsterdam, spain, singapore, australia, sydney, "new zealand", japan, tokyo, china, "hong kong", "new york", "san francisco", "bay area", seattle, austin, boston, chicago, "los angeles", denver, atlanta, dallas, houston, miami, emea, europe, latam, "latin america", "north america", americas, brazil, mexico, colombia, argentina, chile, peru, nigeria, kenya, "south africa", egypt, israel, "tel aviv", dubai, uae, "saudi arabia", philippines, manila, indonesia, jakarta, malaysia, "kuala lumpur", vietnam, thailand, pakistan, bangladesh, "sri lanka", poland, romania, serbia, portugal, italy, sweden, norway, denmark, finland, belgium, switzerland, austria, "any state", nationwide, "us time zones", "est time zone", "pst time zone", alabama, alaska, arizona, arkansas, california, colorado, connecticut, delaware, florida, georgia, hawaii, idaho, illinois, indiana, iowa, kansas, kentucky, louisiana, maine, maryland, massachusetts, michigan, minnesota, mississippi, missouri, montana, nebraska, nevada, "new hampshire", "new jersey", "new mexico", "north carolina", "north dakota", ohio, oklahoma, oregon, pennsylvania, "rhode island", "south carolina", "south dakota", tennessee, texas, utah, vermont, virginia, washington, "west virginia", wisconsin, wyoming]
+
+experience:
+  early_career_max_years: 3
+  senior_min_years: 5
+  # Missing experience is UNKNOWN. It is never treated as senior and never as junior.
+  unknown_treatment: neutral
+  early_career_title_terms: [associate, junior, jr, "entry level", "entry-level", graduate, "new grad", trainee, apprentice, fresher, intern, internship, apm]
+  early_career_text_signals: ["0-3 years", "0-2 years", "1+ years", "new graduate", "new grads ok", fresher, "entry level", "work sample", "paid trial", "founder experience"]
+  senior_title_terms: [senior, sr, lead, principal, staff, "associate director", avp, "assistant vice president"]
+  # PROPOSED hard-exclusion candidates. treatment: soft_penalty (default) | hard_exclude.  OPERATOR DECISION.
+  executive_title_terms: ["vice president", vp, director, "head of", "general manager", president, "chief executive", "chief operating", "chief financial", "chief technology", cto, cfo, coo, ceo]
+  executive_title_treatment: soft_penalty
+  # Internships: flag_only keeps them qualified like any early-career title; needs_review holds them for your decision
+  # (an internship may not be the job you want).  OPERATOR DECISION.
+  internship_treatment: needs_review
+  internship_title_terms: [intern, internship, trainee, apprentice]
+  # Mid-level management titles are not senior by themselves. ignore (default) or soft_penalty.  OPERATOR DECISION.
+  mid_level_title_terms: ["deputy manager", "assistant manager", "manager"]
+  mid_level_title_treatment: ignore
+  # An upstream aggregator label (Feashliaa skill_level: entry / mid / senior / intern) is a SOURCE-REPORTED, machine-derived
+  # level. use = it adds a soft signal when available; ignore = never used.  OPERATOR DECISION.
+  source_reported_level_treatment: use
+
+hard_exclusions:
+  # Only these remove a record from the shortlist (the record always stays in SQLite). Insufficient role evidence is NOT
+  # an exclusion: such records go to the exploration lane or to low priority.
+  incompatible_location: true      # every documented location is foreign-only/non-India, with nothing unknown
+  human_verdict_no: true           # a stored verdict of No (verdicts.suppress_rejected must also be true)
+  closed_or_not_seen: true         # the existing lifecycle already says the job is not listed
+  placeholder_company_label: true  # "DO NOT USE", "Actively Hiring", ...
+  non_target_role: true            # the title names an explicitly different job and matches no role family (see role_screening)
+
+role_screening:
+  # High-confidence "this is a different job" markers. They are consulted only when NO role family matched, so
+  # "Solutions Engineer" or "Forward Deployed Engineer" are never removed by the word "engineer".
+  non_target_title_terms:
+    - "software engineer"
+    - "software developer"
+    - "software development engineer"
+    - sde
+    - sdet
+    - "backend"
+    - "back end"
+    - "front end"
+    - frontend
+    - "full stack"
+    - fullstack
+    - "mobile developer"
+    - "ios developer"
+    - "android developer"
+    - devops
+    - sre
+    - "site reliability"
+    - "platform engineer"
+    - "security engineer"
+    - "network engineer"
+    - "data engineer"
+    - "data scientist"
+    - "machine learning engineer"
+    - "ml engineer"
+    - "research scientist"
+    - "research engineer"
+    - "hardware"
+    - firmware
+    - embedded
+    - "verification engineer"
+    - "design engineer"
+    - "test engineer"
+    - "qa engineer"
+    - "quality assurance"
+    - "test automation"
+    - "database administrator"
+    - dba
+    - sap
+    - abap
+    - mainframe
+    - recruiter
+    - "talent acquisition"
+    - "human resources"
+    - "hr business partner"
+    - payroll
+    - "accounts payable"
+    - "accounts receivable"
+    - accountant
+    - "chartered accountant"
+    - "tax "
+    - audit
+    - attorney
+    - "legal counsel"
+    - paralegal
+    - nurse
+    - physician
+    - pharmacist
+    - clinical
+    - "customer support"
+    - "technical support"
+    - "support engineer"
+    - "service desk"
+    - "help desk"
+    - "account executive"
+    - "account manager"
+    - "sales development"
+    - sdr
+    - bdr
+    - telesales
+    - "field sales"
+    - driver
+    - warehouse
+    - technician
+    - designer
+  # Title words that make an otherwise unmatched title WORTH A LOOK. A record with one of these and no role family is held
+  # in the exploration lane (low cost, never qualified automatically).
+  exploration_signals: [founding, gtm, "go to market", "go-to-market", strategy, strategic, growth, operations, ops, automation, workflow, implementation, solutions, "customer success", consultant, "business analysis", analyst, generalist, program, venture, incubation, studio, "chief of staff", "special projects", ai, genai, llm, agent, agentic]
+  # Titles that look like pure AI/ML ENGINEERING (building models) rather than AI IMPLEMENTATION (deploying them).
+  ai_engineering_terms: ["ai engineer", "genai engineer", "llm engineer", "agentic ai engineer", "applied ml", "ai developer", "ai/ml engineer", "ai platform engineer"]
+  # exploration = review lane with a warning flag; non_target = high-confidence exclusion.  OPERATOR DECISION.
+  ai_engineering_treatment: exploration
+
+company_interests:
+  # Stream B sector/product interests. PROPOSED; the guide only says "AI-centered product evidence, fit to target
+  # sectors", so these categories and terms need your review before anything depends on them.
+  ai_native:
+    - "artificial intelligence"
+    - "generative ai"
+    - llm
+    - "large language model"
+    - "machine learning"
+    - "ai agent"
+    - "ai-powered"
+    - "ai platform"
+    - "ai-native"
+    - copilot
+  enterprise_software:
+    - "enterprise software"
+    - saas
+    - "b2b"
+    - "workflow automation"
+    - "developer tools"
+    - "api platform"
+    - "customer data"
+    - "revenue operations"
+  fintech:
+    - fintech
+    - payments
+    - "financial infrastructure"
+    - lending
+    - "banking as a service"
+    - "financial automation"
+  vertical_ai_software:
+    - healthtech
+    - "legal tech"
+    - "insurance technology"
+    - "supply chain software"
+    - "hr tech"
+    - "vertical saas"
+  startup_signals:
+    - "seed"
+    - "series a"
+    - "series b"
+    - "early-stage"
+    - "pre-seed"
+    - "yc"
+
+# Interest categories that only carry generic wording ("b2b", "saas"). Matching ONLY these never qualifies a company by itself.
+generic_interest_categories: [enterprise_software]
+
+unknown_handling:
+  location: needs_review          # missing/unparseable location -> needs review, never approved
+  remote_without_country: needs_review
+  experience: neutral
+  availability: neutral
+  weak_alias_without_corroboration: needs_review
+  missing_company_evidence: needs_review
+
+verdicts:
+  suppress_rejected: true          # a stored No removes the record from normal suggestions (kept in SQLite)
+  never_modify_notes: true
+
+shortlist:
+  jobs: 20
+  companies_only: 5
+  exploration_lane: 10             # low-cost review lane for plausible titles without a role family (never qualified)
+  # The preview never pads the list: fewer items are shown when fewer qualify.
+  allow_fill_with_needs_review: false

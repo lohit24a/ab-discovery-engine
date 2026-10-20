@@ -816,6 +816,49 @@ def _render_inv_summary(s):
     return lines
 
 
+def _configure_ranking_preview(parser):
+    parser.add_argument("--db", help="database to read (default: the project database, opened read-only); a disposable copy is fine")
+    parser.add_argument("--as-of", help="reference time (ISO); default: the newest observation recorded in the database")
+    parser.add_argument("--output", help="write the full machine-readable preview as JSON here (put it under exports/, which is Git-ignored)")
+    parser.add_argument("--no-hints", action="store_true", help="skip the unresolved-identity review hints (faster)")
+    parser.add_argument("--case-job-id", action="append", default=[], help="job id (prefix) to report individually in the preview; repeatable")
+    parser.add_argument("--with-cached-upstream-attributes", action="store_true",
+                        help="also read source-reported level / recruiter flags from the already-cached Feashliaa feed on disk (offline, no network)")
+
+
+def cmd_ranking_preview(args, db_path=None) -> int:
+    """Read-only: never writes to the database, never touches Sheets, never changes a lifecycle state."""
+    import json as _json
+    from . import candidates, database, profile as prof, ranking_preview
+    path_db = Path(args.db) if getattr(args, "db", None) else (db_path or database.resolve_db_path(PROJECT_ROOT))
+    if not path_db.is_file():
+        print("[REFUSED] database not found")
+        return 1
+    try:
+        pr, rk = prof.load_profile(), prof.load_ranking()
+    except prof.ConfigError as exc:
+        print(f"[REFUSED] configuration invalid: {exc}")
+        return 1
+    ro = database.connect(path_db, readonly=True)
+    try:
+        as_of = candidates.parse_when(args.as_of) if getattr(args, "as_of", None) else None
+        upstream = None
+        if getattr(args, "with_cached_upstream_attributes", False):
+            from . import upstream_attrs
+            upstream = upstream_attrs.load_feashliaa_attributes(ro)
+        preview = ranking_preview.build_preview(ro, pr, rk, as_of=as_of, with_hints=not getattr(args, "no_hints", False),
+                                                  case_job_ids=tuple(getattr(args, "case_job_id", []) or ()), upstream=upstream)
+    finally:
+        ro.close()
+    print("\n".join(ranking_preview.render_text(preview)))
+    if getattr(args, "output", None):
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(preview, indent=1, default=str), encoding="utf-8")
+        print(f"\nFull preview written to {args.output}")
+    return 0
+
+
 def _configure_identity_report(parser):
     parser.add_argument("--examples", type=int, default=2, help="representative examples to keep per rule")
     parser.add_argument("--output", help="also write the full report as JSON to this file (read-only otherwise)")
@@ -932,6 +975,7 @@ COMMANDS = {
     "restricted-policy": ("Show the restricted job-board policy (read-only)", cmd_restricted_policy, _configure_restricted_policy),
     "investor-boards-collect": ("Read investor/accelerator boards into a snapshot (bounded, read-only; operator-approved)",
                                 cmd_investor_boards_collect, _configure_inv_collect),
+    "ranking-preview": ("Read-only ranking preview with the proposed profile and weights; publishes and changes nothing", cmd_ranking_preview, _configure_ranking_preview),
     "identity-report": ("Read-only identity reconciliation report (duplicate evidence by tier); changes nothing", cmd_identity_report, _configure_identity_report),
     "investor-boards-report": ("Read-only report over saved investor-board snapshots", cmd_investor_boards_report, _configure_inv_report),
     "investor-boards-import": ("Import an investor-board snapshot after YOUR approval (dry-run by default)",

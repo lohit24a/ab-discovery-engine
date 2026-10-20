@@ -1,0 +1,159 @@
+# Ranking weights for the A+B Discovery Engine (deterministic points, no AI, no model calls).
+#
+# STATUS: PROPOSED for operator review (Day 12, checkpoint 1). These point values encode subjective career
+# preferences. They are a starting point to make the previews readable; they are NOT final and nothing may depend on
+# them until the operator has reviewed and approved them. Change a number, rerun `ranking-preview`, compare.
+#
+# How a score is built
+#   score = sum of the component points below. Points never come from invented facts: every component is tied to a
+#   recorded field, and the explanation printed for each candidate cites that field.
+#   Hard exclusions (search_profile.yaml -> hard_exclusions) remove a record from the shortlist; everything else only
+#   moves the score or the classification.
+#
+# Classification
+#   confirmed_eligible  strong role evidence AND confirmed India/Bengaluru location (or explicit India remote)
+#   needs_review        something is unknown or only weakly supported (location, weak role alias, ...)
+#   excluded            a hard exclusion applies (the record is kept, never shown in normal suggestions)
+
+version: 1
+status: proposed_for_operator_review
+
+reference:
+  # null = the newest observation recorded in the database, so a frozen database always ranks the same way.
+  as_of: null
+
+# What a stored date MEANS, per source type. Only provider_reported_creation can earn a listing-age bonus. An aggregator's
+# first-seen date says when the AGGREGATOR first noticed a listing (a median of ~29 days and up to months after it was
+# scraped), not when the employer posted it, so it earns nothing.
+date_semantics:
+  ats_feed: aggregator_first_seen
+  aggregator: aggregator_first_seen
+  investor_board: provider_reported_creation
+  yc: none
+  manual: user_supplied
+  other: none
+
+jobs:
+  thresholds:
+    confirmed_eligible_min_score: 45
+    needs_review_min_score: 12
+  role_relevance:
+    strong_alias: 40
+    weak_alias_corroborated: 24
+    weak_alias_uncorroborated: 8
+    secondary_family_bonus: 3
+    negative_title_term_penalty: -15
+    responsibility_signal: 4
+    responsibility_signal_cap: 12
+  experience:
+    early_career_signal: 12
+    junior_title_term: 8
+    senior_title_penalty: -22
+    executive_title_penalty: -40
+    stated_experience_within_early_career: 10
+    stated_experience_senior: -25
+    source_reported_senior_penalty: -10
+    source_reported_entry_bonus: 8
+    recruiter_posted_penalty: -12
+    mid_level_title_penalty: -8
+    unknown: 0
+  location:
+    bengaluru: 20
+    india_remote_explicit: 18
+    india_country_only: 8
+    india_other_city: 4
+    worldwide_remote: 6
+    remote_regional_plausible: 6
+    remote_unqualified: 0
+    unknown: 0
+  exploration:
+    # The low-cost lane for titles with no role family but a plausible signal. It orders the lane only; it can never qualify.
+    exploration_signal: 10
+    ai_engineering_flag_penalty: -4
+    minimum_score: 14
+  availability:
+    employer_confirmed_open: 20
+    in_latest_check: 6
+    observed_earlier: 0
+    unknown: 0
+    historical: -12
+  listing_age:
+    fresh_days: 14
+    fresh_points: 6
+    recent_days: 60
+    recent_points: 3
+    stale_days: 180
+    stale_points: -6
+  source_quality:
+    ats_feed: 4
+    investor_board: 3
+    yc: 3
+    manual: 4
+    aggregator: 1
+    other: 0
+  company:
+    sector_interest_per_match: 3
+    sector_interest_cap: 9
+    startup_signal: 3
+    investor_board_listed: 3
+    yc_company: 3
+    also_a_company_candidate: 3
+  verdict:
+    yes: 25
+    maybe: 5
+
+companies:
+  thresholds:
+    eligible_min_score: 30
+    needs_review_min_score: 10
+  product_relevance:
+    sector_interest_per_match: 8
+    sector_interest_cap: 24
+    ai_native_bonus: 10
+  startup_signals:
+    yc_company: 8
+    yc_stage_or_batch_recorded: 2
+    small_team_recorded: 3
+    startup_signal_term: 2
+    startup_signal_cap: 6
+  investor_evidence:
+    # Counts boards that LIST the company. Funding amounts and valuations are never inferred.
+    per_investor_board_listing: 5
+    cap: 10
+  india_connection:
+    india_based: 15
+    potentially_relevant: 6
+    bengaluru_in_recorded_location: 10
+    unverified: 0
+    no_india_evidence_yet: 0
+  source_confidence:
+    description_recorded: 5
+    multiple_independent_sources: 4
+    single_source_name_only: -10
+  jobs_presence:
+    # Having jobs helps a little; having none is NOT a penalty (Stream B exists for companies with no openings).
+    observed_job_listing: 3
+    observed_job_cap: 6
+    no_jobs: 0
+  operating_status:
+    # YC's directory status is SOURCE-REPORTED and possibly outdated. Inactive or acquired companies are held for review.
+    inactive_penalty: -25
+    acquired_penalty: -10
+  verdict:
+    yes: 25
+    maybe: 5
+
+session:
+  # Review lanes (PROPOSED). A high-ranking old record must not keep consuming a new-discovery slot.
+  new_window_days: 7
+  slots:
+    new_discovery: 10
+    changed: 3
+    previously_unreviewed: 4
+    uncertain_valuable: 3
+
+shortlist:
+  # A generic per-employer cap (applies to every source alike); it is NOT a source-specific exclusion.
+  max_per_employer: 2
+  minimum_score_to_list_jobs: 45
+  minimum_score_to_list_companies: 30

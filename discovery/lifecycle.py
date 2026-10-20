@@ -143,3 +143,34 @@ def hiring_evidence_text(job_classes, source_names, latest_seen):
     if latest_seen:
         text += f" | last observed {latest_seen[:10]}"
     return text
+
+
+def latest_run_checks(conn, kind="any"):
+    """source_id -> the source's newest RUN, summarised: earliest start among its checks, complete only if all are, scopes
+    joined, `partial` if any scope was partial. A source that checks one company at a time (YC job pages) therefore counts a
+    job seen anywhere in the newest run as 'in the latest check', not only the last company scanned.
+
+    kind="any"  : successful checks of every scope (the Day 11 behaviour).
+    kind="jobs" : checks that cover JOB listings: scopes about companies ("companies:...", "companies/...") are ignored, and
+                  a PARTIAL job scan counts (a job really was observed in it) but is flagged `partial`. A job must never be
+                  judged against a company-directory scan of the same source."""
+    outcomes = ("success",) if kind == "any" else ("success", "partial")
+    marks = ",".join("?" * len(outcomes))
+    rows = conn.execute(f"""SELECT source_id, run_id, scope, started_at, complete, outcome FROM source_checks
+                            WHERE outcome IN ({marks}) ORDER BY started_at""", outcomes).fetchall()
+    if kind == "jobs":
+        rows = [r for r in rows if not (r["scope"] or "").startswith(("companies:", "companies/"))]
+    newest = {}
+    for r in rows:
+        newest[r["source_id"]] = r["run_id"]
+    out = {}
+    for r in rows:
+        if r["run_id"] != newest[r["source_id"]]:
+            continue
+        o = out.setdefault(r["source_id"], {"started_at": r["started_at"], "complete": r["complete"], "scope": r["scope"], "partial": False})
+        o["started_at"] = min(o["started_at"], r["started_at"])
+        o["complete"] = min(o["complete"], r["complete"])
+        o["partial"] = o["partial"] or r["outcome"] == "partial"
+        if r["scope"] not in o["scope"].split(" | "):
+            o["scope"] = o["scope"] + " | " + r["scope"]
+    return out

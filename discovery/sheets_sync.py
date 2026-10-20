@@ -270,10 +270,7 @@ def load_hiring_evidence(conn):
 
     A listing on a board or feed is an OBSERVATION; it is never described as an open vacancy unless an
     employer-direct source supports it. Dates and sources are kept in the text."""
-    checks = {}
-    for r in conn.execute("""SELECT c.source_id, c.started_at, c.complete, c.scope FROM source_checks c
-                             WHERE c.outcome = 'success' ORDER BY c.started_at"""):
-        checks[r["source_id"]] = r                      # ordered, so the newest successful check wins
+    checks = lifecycle.latest_run_checks(conn, "jobs")   # each source's newest run of JOB scans (company scans never count)
     best, names, latest = {}, {}, {}
     order = {c: i for i, c in enumerate(lifecycle.CLASS_ORDER)}
     for r in conn.execute("""SELECT g.job_id, j.company_id, j.lifecycle_state, g.last_seen_at, g.provider_freshness,
