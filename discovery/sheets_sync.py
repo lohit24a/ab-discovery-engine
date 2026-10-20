@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import database as db
+from . import identity, lifecycle
 from .sheets_schema import (HUMAN, KEY, KEY_COLUMN, MACHINE, NOTES_COLUMN, TAB_COLUMNS, TAB_ORDER,
                             VERDICT_COLUMN, VERDICT_VALUES, column_names)
 
@@ -247,8 +248,11 @@ def load_post_rows(conn):
                              WHERE g.job_id IS NOT NULL ORDER BY g.first_seen_at, g.sighting_id"""):
         sightings.setdefault(r["job_id"], []).append(r)
     out = {}
+    merged_away = identity.alias_ids(conn, "job")
     for j in conn.execute("""SELECT j.*, c.name AS company_name FROM jobs j
                              JOIN companies c USING (company_id) ORDER BY j.first_seen_at, j.job_id"""):
+        if j["job_id"] in merged_away:
+            continue
         seen = sightings.get(j["job_id"], [])
         out[j["job_id"]] = {
             "Company": j["company_name"], "Job Title": j["title"], "Location": _s(j["location"]),
@@ -261,8 +265,38 @@ def load_post_rows(conn):
     return out
 
 
+def load_hiring_evidence(conn):
+    """company_id -> source-accurate label of what is known about its jobs (see lifecycle.hiring_evidence_text).
+
+    A listing on a board or feed is an OBSERVATION; it is never described as an open vacancy unless an
+    employer-direct source supports it. Dates and sources are kept in the text."""
+    checks = {}
+    for r in conn.execute("""SELECT c.source_id, c.started_at, c.complete, c.scope FROM source_checks c
+                             WHERE c.outcome = 'success' ORDER BY c.started_at"""):
+        checks[r["source_id"]] = r                      # ordered, so the newest successful check wins
+    best, names, latest = {}, {}, {}
+    order = {c: i for i, c in enumerate(lifecycle.CLASS_ORDER)}
+    for r in conn.execute("""SELECT g.job_id, j.company_id, j.lifecycle_state, g.last_seen_at, g.provider_freshness,
+                                    g.source_id, src.name, src.source_type, src.config_ref
+                             FROM sightings g JOIN jobs j USING (job_id) JOIN sources src ON src.source_id = g.source_id
+                             WHERE g.job_id IS NOT NULL"""):
+        cls = lifecycle.classify_observation(r, r, checks.get(r["source_id"]), r["lifecycle_state"])
+        key = r["job_id"]
+        if key not in best or order[cls] < order[best[key][1]]:
+            best[key] = (r["company_id"], cls)
+        names.setdefault(r["company_id"], set()).add(r["name"])
+        latest[r["company_id"]] = max(latest.get(r["company_id"], ""), r["last_seen_at"])
+    by_company = {}
+    for company_id, cls in best.values():
+        by_company.setdefault(company_id, []).append(cls)
+    return {cid: lifecycle.hiring_evidence_text(classes, names.get(cid, ()), latest.get(cid))
+            for cid, classes in by_company.items()}
+
+
 def load_company_rows(conn):
     sightings, jobs = {}, {}
+    evidence = load_hiring_evidence(conn)
+    merged_away = identity.alias_ids(conn, "company")
     for r in conn.execute("""SELECT g.company_id, g.first_seen_at, g.last_seen_at, s.name AS source_name
                              FROM sightings g JOIN sources s USING (source_id)
                              WHERE g.company_id IS NOT NULL"""):
@@ -271,13 +305,14 @@ def load_company_rows(conn):
         jobs.setdefault(r["company_id"], []).append(r["lifecycle_state"])
     out = {}
     for c in conn.execute("SELECT * FROM companies ORDER BY created_at, company_id"):
+        if c["company_id"] in merged_away:
+            continue                                    # merged into another record: that record carries the row
         seen, states = sightings.get(c["company_id"], []), jobs.get(c["company_id"], [])
         aliases = json.loads(c["aliases"])
         facts = json.loads(c["facts"])
         yc = facts.get("yc") or {}
         details = f"Identity: {c['identity_status']}" + (f"; also known as: {', '.join(aliases)}" if aliases else "")
-        live = sum(1 for s in states if s in LIVE_STATES)
-        hiring = (f"{live} of {len(states)} observed job(s) currently live" if states else "No jobs observed")
+        hiring = evidence.get(c["company_id"]) or "No jobs observed"
         if yc:  # source-reported YC facts, labelled as such
             bits = [yc.get("batch"), yc.get("stage"), yc.get("status"), yc.get("industry"),
                     f"team {yc['team_size']}" if yc.get("team_size") else None,

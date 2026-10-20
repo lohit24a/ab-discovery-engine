@@ -816,6 +816,44 @@ def _render_inv_summary(s):
     return lines
 
 
+def _configure_identity_report(parser):
+    parser.add_argument("--examples", type=int, default=2, help="representative examples to keep per rule")
+    parser.add_argument("--output", help="also write the full report as JSON to this file (read-only otherwise)")
+    parser.add_argument("--review-output", help="write the detailed evidence review (tier B/D categories, promotion proposals, "
+                                                "same-source repeats, title conflicts) as JSON to this file; put it under exports/ (Git-ignored)")
+
+
+def cmd_identity_report(args, db_path=None) -> int:
+    """Read-only: opens the database read-only and never proposes or applies a merge by itself."""
+    import json as _json
+    from . import database, identity
+    path_db = db_path or database.resolve_db_path(PROJECT_ROOT)
+    if not path_db.is_file():
+        print("[REFUSED] database not initialized; run: python -m discovery init-db")
+        return 1
+    ro = database.connect(path_db, readonly=True)
+    try:
+        report = identity.build_report(ro, examples=max(0, args.examples))
+    finally:
+        ro.close()
+    print("\n".join(identity.render_report(report)))
+    if getattr(args, "review_output", None):
+        from . import identity_review
+        ro2 = database.connect(path_db, readonly=True)
+        try:
+            review = identity_review.build_review(ro2)
+        finally:
+            ro2.close()
+        out = Path(args.review_output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(review, indent=1, default=str), encoding="utf-8")
+        print(f"Detailed review written to {args.review_output} ({len(review['promotion_proposals'])} promotion proposals need operator approval; nothing was applied)")
+    if args.output:
+        Path(args.output).write_text(_json.dumps(report, indent=1), encoding="utf-8")
+        print(f"Full report written to {args.output}")
+    return 0
+
+
 def _configure_inv_report(parser):
     parser.add_argument("--snapshot", required=True, nargs="+", help="one or more snapshots written by investor-boards-collect")
 
@@ -894,6 +932,7 @@ COMMANDS = {
     "restricted-policy": ("Show the restricted job-board policy (read-only)", cmd_restricted_policy, _configure_restricted_policy),
     "investor-boards-collect": ("Read investor/accelerator boards into a snapshot (bounded, read-only; operator-approved)",
                                 cmd_investor_boards_collect, _configure_inv_collect),
+    "identity-report": ("Read-only identity reconciliation report (duplicate evidence by tier); changes nothing", cmd_identity_report, _configure_identity_report),
     "investor-boards-report": ("Read-only report over saved investor-board snapshots", cmd_investor_boards_report, _configure_inv_report),
     "investor-boards-import": ("Import an investor-board snapshot after YOUR approval (dry-run by default)",
                                cmd_investor_boards_import, _configure_inv_import),

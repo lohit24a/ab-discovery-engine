@@ -234,5 +234,81 @@ PRAGMA user_version = 4;
 COMMIT;
 """
 
-MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4]
+# v5 (Day 11): reviewable identity decisions. A confirmed link says "alias is the same real job/company as
+# canonical"; a possible link records a candidate for review; a rejected link records a human "not the same"
+# so it is never proposed again. Nothing is deleted or rewritten by creating a link; merging (merge.py) moves
+# sightings/jobs to the canonical record and keeps the alias row, its events and its history. Purely additive.
+# No foreign keys: the ids point into jobs or companies depending on entity_type (checked in code).
+MIGRATION_5 = """
+BEGIN;
+
+CREATE TABLE identity_links (
+    link_id      TEXT PRIMARY KEY,
+    entity_type  TEXT NOT NULL CHECK (entity_type IN ('job', 'company')),
+    canonical_id TEXT NOT NULL,
+    alias_id     TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('confirmed', 'possible', 'rejected')),
+    tier         TEXT NOT NULL CHECK (tier IN ('A', 'B', 'C', 'D')),
+    rule         TEXT NOT NULL CHECK (length(trim(rule)) > 0),
+    evidence     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(evidence)),
+    decided_by   TEXT NOT NULL CHECK (length(trim(decided_by)) > 0),
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    CHECK (canonical_id <> alias_id),
+    UNIQUE (entity_type, canonical_id, alias_id)
+);
+-- An alias can be confirmed into at most one canonical record.
+CREATE UNIQUE INDEX ux_identity_alias_confirmed ON identity_links(entity_type, alias_id) WHERE status = 'confirmed';
+CREATE INDEX ix_identity_status ON identity_links(entity_type, status);
+CREATE TRIGGER trg_identity_links_no_delete BEFORE DELETE ON identity_links
+BEGIN SELECT RAISE(ABORT, 'identity_links is a history of decisions and cannot be deleted'); END;
+
+PRAGMA user_version = 5;
+COMMIT;
+"""
+
+# v6 (Day 11 hardening): every identity decision keeps the rule version and a review status, and a separate table holds
+# RELATIONSHIPS that are not identity (a parent/subsidiary/legacy-brand candidate, the same posting under different employer
+# labels, two postings of one requisition, a placeholder source label). Relations are review/presentation records only:
+# nothing reads them to merge, close or suppress a record. Purely additive; existing links are marked as operator-reviewed.
+MIGRATION_6 = """
+BEGIN;
+
+ALTER TABLE identity_links ADD COLUMN rule_version TEXT;
+ALTER TABLE identity_links ADD COLUMN review_status TEXT NOT NULL DEFAULT 'unreviewed'
+    CHECK (review_status IN ('unreviewed', 'reviewed'));
+-- The 156 Tier-A links created before this version were approved by the operator in chat.
+UPDATE identity_links SET review_status = 'reviewed', rule_version = 'day11-v1' WHERE status = 'confirmed' AND rule_version IS NULL;
+
+CREATE TABLE identity_relations (
+    relation_id   TEXT PRIMARY KEY,
+    entity_type   TEXT NOT NULL CHECK (entity_type IN ('job', 'company')),
+    kind          TEXT NOT NULL CHECK (kind IN ('related_company', 'same_posting_different_label',
+                                                'same_requisition_different_posting', 'invalid_source_label')),
+    left_id       TEXT NOT NULL,
+    right_id      TEXT,
+    status        TEXT NOT NULL CHECK (status IN ('candidate', 'verified', 'dismissed')),
+    detail        TEXT NOT NULL DEFAULT '',
+    rule          TEXT NOT NULL CHECK (length(trim(rule)) > 0),
+    rule_version  TEXT NOT NULL,
+    evidence      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(evidence)),
+    review_status TEXT NOT NULL DEFAULT 'unreviewed' CHECK (review_status IN ('unreviewed', 'reviewed')),
+    decided_by    TEXT NOT NULL CHECK (length(trim(decided_by)) > 0),
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    CHECK (right_id IS NULL OR left_id <> right_id),
+    CHECK ((kind = 'invalid_source_label') = (right_id IS NULL))
+);
+CREATE UNIQUE INDEX ux_identity_relation ON identity_relations(entity_type, kind, left_id, COALESCE(right_id, ''));
+CREATE INDEX ix_identity_relation_status ON identity_relations(entity_type, status);
+CREATE TRIGGER trg_identity_relations_no_delete BEFORE DELETE ON identity_relations
+BEGIN SELECT RAISE(ABORT, 'identity_relations is a history of review decisions and cannot be deleted'); END;
+
+PRAGMA user_version = 6;
+COMMIT;
+"""
+
+MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6]
+# Supplementary tables (not part of the original eight): added by later migrations.
+SUPPLEMENTARY_TABLES = ("identity_links", "identity_relations")
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from . import lifecycle
 from .schema import APP_TABLES, MIGRATIONS, SCHEMA_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -443,9 +444,13 @@ def append_status_event(conn, new_state, reason, *, job_id=None, company_id=None
                                       (job_id, check["source_id"])).fetchone()
             if not seen_there:
                 raise ValueError("The evidence source has never sighted this job")
-            source = conn.execute("SELECT config_ref FROM sources WHERE source_id = ?", (check["source_id"],)).fetchone()
+            source = conn.execute("SELECT source_type, config_ref FROM sources WHERE source_id = ?", (check["source_id"],)).fetchone()
             if source and source["config_ref"] == NO_CLOSURE_EVIDENCE:
                 raise ValueError(f"Source '{check['source_id']}' is a supplementary feed and can never be closure evidence")
+            if source:
+                usable, why = lifecycle.check_proves_absence(check, source["source_type"], source["config_ref"])
+                if not usable:
+                    raise ValueError(f"'{new_state}' needs closure evidence, but {why} (source '{check['source_id']}')")
         previous = _current_state(conn, job_id, company_id)
         if previous == new_state and not allow_same_state:
             return None
@@ -662,7 +667,13 @@ def observe_job(conn, *, source_id, source_url, company_id, title, external_id=N
                                          external_id=external_id, provider_observed_at=provider_observed_at,
                                          content_hash=new_hash, provider_first_seen_at=provider_first_seen_at,
                                          provider_freshness=provider_freshness, snapshot_at=snapshot_at, now=now)
-        if changed:
+        if changed and not _is_best_source(conn, job_id, source_id):
+            # A lower-precedence source disagrees: keep the canonical fields, but leave a trace of the change.
+            append_status_event(conn, get_job(conn, job_id)["lifecycle_state"],
+                                f"Content changed at source {source_id}; canonical fields kept (a higher-precedence source reports this job)",
+                                job_id=job_id, sighting_id=sighting_id, allow_same_state=True, now=now)
+            changed = False
+        elif changed:
             updates = {"title": title, "normalized_title": normalize_name(title), "location": location,
                        "remote_eligibility": remote_eligibility, "experience_min_years": experience_min_years,
                        "experience_max_years": experience_max_years, "experience_text": experience_text,
@@ -673,4 +684,18 @@ def observe_job(conn, *, source_id, source_url, company_id, title, external_id=N
                          (*updates.values(), now, job_id))
             append_status_event(conn, "Changed", f"Content changed at source {source_id}",
                                 job_id=job_id, sighting_id=sighting_id, allow_same_state=True, now=now)
+        if not created and get_job(conn, job_id)["lifecycle_state"] in ("Closed", "Not Seen"):
+            src = conn.execute("SELECT source_type, config_ref FROM sources WHERE source_id = ?", (source_id,)).fetchone()
+            if src and lifecycle.reopen_allowed(src["source_type"], src["config_ref"], provider_freshness):
+                append_status_event(conn, "Reopened", f"Same job identity reported again by source {source_id}",
+                                    job_id=job_id, sighting_id=sighting_id, now=now)
     return JobObservation(job_id, created, changed, sighting_id)
+
+
+def _is_best_source(conn, job_id, source_id):
+    """True when `source_id` is at least as authoritative as every other source that has sighted the job."""
+    rows = conn.execute("""SELECT DISTINCT s.source_id, src.source_type, src.config_ref FROM sightings s
+                           JOIN sources src USING (source_id) WHERE s.job_id = ?""", (job_id,)).fetchall()
+    ranks = {r["source_id"]: lifecycle.source_rank(r["source_type"], r["config_ref"]) for r in rows}
+    mine = ranks.get(source_id, len(lifecycle.SOURCE_PRECEDENCE))
+    return all(mine <= other for sid, other in ranks.items() if sid != source_id)

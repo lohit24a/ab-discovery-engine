@@ -31,7 +31,8 @@ def make_job(conn, title="Fake Analyst", domain="fake-co.example"):
 
 # 1
 def test_initialize_creates_eight_tables(db_path, conn):
-    assert set(db.list_app_tables(conn)) == set(APP_TABLES)
+    from discovery.schema import SUPPLEMENTARY_TABLES
+    assert set(db.list_app_tables(conn)) == set(APP_TABLES) | set(SUPPLEMENTARY_TABLES)   # eight original + identity_links (v5)
     assert len(APP_TABLES) == 8
     assert db.get_schema_version(conn) == SCHEMA_VERSION
 

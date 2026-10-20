@@ -760,8 +760,8 @@ def test_attached_jobs_replay_without_duplicates_or_events(conn):
 
 
 def test_second_investor_board_attaches_to_the_job_the_first_board_created(conn):
-    a = getro_scans(ACCEL, [getro_job(1, org="dupco", domain="dup.io", url="https://careers.dup.io/apply/9")])
-    t = getro_scans(TECHSTARS, [getro_job(2, org="dupco-t", domain="dup.io", id=7002, url="https://careers.dup.io/apply/9")])
+    a = getro_scans(ACCEL, [getro_job(1, org="dupco", domain="dup.io", url="https://boards.greenhouse.io/dupco/jobs/4567890")])
+    t = getro_scans(TECHSTARS, [getro_job(2, org="dupco-t", domain="dup.io", id=7002, url="https://boards.greenhouse.io/dupco/jobs/4567890?gh_src=x")])
     ib.import_snapshot(conn, make_snapshot([(ACCEL, a)]))
     c = ib.import_snapshot(conn, make_snapshot([(TECHSTARS, t)]))
     assert c.jobs_attached == 1 and c.jobs_created == 0 and counts(conn)["jobs"] == 1 and counts(conn)["companies"] == 1
@@ -816,3 +816,31 @@ def test_company_directory_is_filtered_only_by_an_explicit_company_location():
     r = ib.scan_board(API_ACCEL, web, ("companies",), sleep=lambda s: None, company_location="Bengaluru, Karnataka, India")["companies"]
     assert web.calls[0]["json"]["filters"] == {"searchable_locations": ["Bengaluru, Karnataka, India"]}
     assert r.complete and "Bengaluru" in r.filters
+
+
+def test_generic_employer_url_never_attaches_a_board_job_to_an_existing_job(conn):
+    """Regression (Day 11): only a job-specific URL identifies a job; a shared careers page must not attach anything."""
+    cid, job_id = feashliaa_like_job(conn, "https://careers.example.com/open-roles")
+    jobs = [getro_job(1, org="acme-t", url="https://careers.example.com/open-roles")]
+    before = counts(conn)
+    c = ib.import_snapshot(conn, make_snapshot([(ACCEL, getro_scans(ACCEL, jobs))]))
+    assert c.jobs_attached == 0 and c.jobs_created == 1 and counts(conn)["jobs"] == before["jobs"] + 1
+
+
+def test_lever_source_variants_attach_by_scoped_posting_key_and_cross_tenant_ids_do_not(conn):
+    url = "https://jobs.lever.co/meesho/974e9975-c536-4219-bdaa-9cd0f2d4d030"
+    cid, job_id = feashliaa_like_job(conn, url)
+    jobs = [getro_job(1, org="meesho-t", url=url + "?lever-source%5B%5D=careers"),
+            getro_job(2, org="other", url="https://jobs.lever.co/other/974e9975-c536-4219-bdaa-9cd0f2d4d030")]
+    c = ib.import_snapshot(conn, make_snapshot([(ACCEL, getro_scans(ACCEL, jobs))]))
+    assert c.jobs_attached == 1 and c.jobs_created == 1                  # same tenant attaches; the same id on another tenant does not
+
+
+def test_board_job_in_another_city_is_not_attached_to_an_existing_multi_location_posting(conn):
+    url = "https://acme.wd5.myworkdayjobs.com/ext/job/Hyderabad/Analyst_R7654321"
+    cid, job_id = feashliaa_like_job(conn, url)
+    conn.execute("UPDATE jobs SET location = 'Hyderabad, India' WHERE job_id = ?", (job_id,))
+    jobs = [getro_job(1, org="acme-t", url="https://acme.wd5.myworkdayjobs.com/ext/job/Hyderabad/Analyst_R7654321", locations=["Bengaluru, India"],
+                      searchableLocations=["Bengaluru, Karnataka, India"])]
+    c = ib.import_snapshot(conn, make_snapshot([(ACCEL, getro_scans(ACCEL, jobs))]))
+    assert c.jobs_attached == 0 and c.url_ambiguous == 1 and c.jobs_created == 1

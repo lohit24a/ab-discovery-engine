@@ -145,7 +145,8 @@ def test_adds_new_jobs_and_companies(conn, world):
     assert backend.cell("Posts", i, "Score") == ""  # nothing invented
     i = backend.row_of("Companies", world["acme"])
     assert backend.cell("Companies", i, "Domain") == "acme.example"
-    assert backend.cell("Companies", i, "Hiring Evidence") == "1 of 1 observed job(s) currently live"
+    assert backend.cell("Companies", i, "Hiring Evidence").startswith("1 job(s) observed: 1 with no successful source check on record (status unknown)")
+    assert "currently live" not in backend.cell("Companies", i, "Hiring Evidence")
 
 
 # 3

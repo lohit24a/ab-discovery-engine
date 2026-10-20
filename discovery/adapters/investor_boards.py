@@ -47,6 +47,8 @@ from pathlib import Path
 from urllib.parse import urlencode, urljoin, urlsplit
 
 from .. import database as db
+from ..identity import LOCATION_SCOPED_PLATFORMS, locations_conflict
+from ..idkeys import url_signature
 
 CONFIG_PATH = db.PROJECT_ROOT / "config" / "investor_boards.json"
 SNAPSHOT_DIR = db.PROJECT_ROOT / "data" / "investor_boards"
@@ -798,7 +800,7 @@ def preview_identity(conn, snapshot):
             if not found:
                 state = match_by_employer_url(url_index, j)[0]
                 attach_by_url += state == "match"
-                ambiguous_url += state == "ambiguous"
+                ambiguous_url += state in ("ambiguous", "location_conflict")
             k = ((j["company"]["domain"] or (j["company"]["name"] or "").lower()), db.normalize_name(j["title"]), (j["location"] or "").lower())
             dup_jobs.setdefault(k, set()).add(b["key"])
         for keys, ref in refs:
@@ -824,23 +826,44 @@ def sighting_url(job):
     return job.get("apply_url") or job["url"]
 
 
+def _posting_key(url):
+    """Platform- and tenant-scoped key of a job-specific URL, else None: a generic careers page never identifies a job, and a
+    posting id is never compared across ATS tenants. (The stored URL is untouched; this key is only used to compare.)"""
+    if not url:
+        return None
+    sig = url_signature(url)
+    return sig.key if sig.kind == "specific" else None
+
+
 def employer_url_index(conn, exclude_source):
-    """normalized job URL -> {(job_id, company_id)} for jobs seen by sources other than `exclude_source`."""
+    """scoped posting key -> {(job_id, company_id, location)} for jobs seen by sources other than `exclude_source`."""
     index = {}
-    for row in conn.execute("""SELECT s.source_url, s.job_id, j.company_id FROM sightings s JOIN jobs j ON j.job_id = s.job_id
+    for row in conn.execute("""SELECT s.source_url, s.job_id, j.company_id, j.location FROM sightings s JOIN jobs j ON j.job_id = s.job_id
                                WHERE s.job_id IS NOT NULL AND s.source_id <> ?""", (exclude_source,)):
-        index.setdefault(row[0], set()).add((row[1], row[2]))
+        key = _posting_key(row[0])
+        if key:
+            index.setdefault(key, set()).add((row[1], row[2], row[3] or ""))
     return index
 
 
 def match_by_employer_url(index, job):
-    """-> ('match', job_id, company_id) | ('ambiguous', None, None) | (None, None, None)."""
-    hits = set()
+    """-> ('match', job_id, company_id) | ('ambiguous'|'location_conflict', None, None) | (None, None, None).
+
+    Only a job-specific URL can match, within its own ATS namespace. If the matched job's stored location and the board
+    job's location name different known places, the postings are left separate (a multi-location posting is not collapsed)."""
+    hits, keys = set(), set()
     for u in (job.get("apply_url"), job.get("url")):
-        if u:
-            hits |= index.get(db.normalize_url(u), set())
+        key = _posting_key(u)
+        if key:
+            hits |= index.get(key, set())
+            if index.get(key):
+                keys.add(key)
     if len({h[0] for h in hits}) == 1:
-        job_id, company_id = next(iter(hits))
+        job_id, company_id, location = next(iter(hits))
+        # a per-location URL (Workday) can carry the same id on several locations; elsewhere one id is one posting
+        if any(k[1] in LOCATION_SCOPED_PLATFORMS for k in keys) and \
+                locations_conflict((location, job.get("location") or " / ".join(job.get("locations") or []))):
+            return "location_conflict", None, None
         return "match", job_id, company_id
     return ("ambiguous", None, None) if hits else (None, None, None)
 
@@ -908,7 +931,7 @@ def _import_board(conn, b, sid, resolver, counts, run_id, now, collected_at):
             if db.find_sighting(conn, sid, db.normalize_url(sighting_url(j)), j["external_id"], is_job=True):
                 continue
             state, match_job, match_company = match_by_employer_url(url_index, j)
-            if state == "ambiguous":
+            if state in ("ambiguous", "location_conflict"):
                 counts.url_ambiguous += 1
             elif state == "match":
                 kind0, cid0, _ = resolver.lookup(sid, keys, ref)
