@@ -313,6 +313,19 @@ def load_publishable_company_ids(conn):
     return {r[0] for r in rows}
 
 
+def load_publishable_job_ids(conn):
+    """Jobs that may get a NEW row in the review sheet.
+
+    Jobs of companies flagged sheet_publish = false (for example board-code companies imported from the
+    Feashliaa feed) stay in SQLite only, unless they carry a human verdict/note. Publishing a reviewed subset
+    of such jobs is a separate, explicitly approved step. Companies without a flag (older data) publish.
+    """
+    rows = conn.execute("""SELECT j.job_id FROM jobs j JOIN companies c USING (company_id)
+                           WHERE json_extract(c.facts, '$.sheet_publish') IS NOT 0
+                              OR EXISTS (SELECT 1 FROM verdicts v WHERE v.job_id = j.job_id)""")
+    return {r[0] for r in rows}
+
+
 def load_run_rows(conn):
     checks = {}
     for r in conn.execute("SELECT * FROM source_checks"):
@@ -537,7 +550,8 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
         def human_for(rid, restore_only=True, _tab=tab):
             return restores[_tab].get(rid, {"cells": {}})["cells"] if _tab != "Runs" else {}
         plans[tab] = _plan_keyed_tab(states[tab], found[tab], data, human_for, report, tab,
-                                     appendable=load_publishable_company_ids(conn) if tab == "Companies" else None)
+                                     appendable={"Companies": load_publishable_company_ids,
+                                                 "Posts": load_publishable_job_ids}.get(tab, lambda c: None)(conn))
         if tab != "Runs":
             for rid, info in restores[tab].items():
                 if info["row"] is not None:

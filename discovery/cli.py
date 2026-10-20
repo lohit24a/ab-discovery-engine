@@ -260,12 +260,46 @@ def cmd_import_yc(args, fetch=None) -> int:
             conn.close()
 
 
+def cmd_import_feashliaa(args, fetch=None, cache_dir=None) -> int:
+    from . import database
+    from .adapters import feashliaa as fz
+    from .schema import SCHEMA_VERSION
+
+    fetch = fetch or fz.fetch_bytes
+    cache_dir = cache_dir or (PROJECT_ROOT / "data" / "cache" / "feashliaa")
+    db_path = database.resolve_db_path(PROJECT_ROOT)
+    conn = None
+    try:
+        if args.apply:
+            if not db_path.is_file():
+                print("[FAIL] Database not initialized; run: python -m discovery init-db")
+                return 1
+            conn = database.connect(db_path)
+            if database.get_schema_version(conn) != SCHEMA_VERSION:
+                print("[FAIL] Database schema is out of date; back it up, then run: python -m discovery init-db")
+                return 1
+        elif db_path.is_file():
+            conn = database.connect(db_path, readonly=True)
+        try:
+            report = fz.execute(conn, apply=args.apply, cache_dir=cache_dir, fetch=fetch)
+        except fz.SourceError as exc:
+            print(f"[FAIL] {exc}")
+            return 1
+        print("\n".join(report.lines()))
+        return 0 if report.status in ("ok", "already_processed") else 1
+    finally:
+        if conn:
+            conn.close()
+
+
 # Register new subcommands here: name -> (help text, handler, optional argument configurer)
 COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
     "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
     "sync": ("Synchronize SQLite with the TEST Google Sheet", cmd_sync, _configure_sync),
     "import-yc": ("Import Y Combinator companies (Stream B)", cmd_import_yc, _configure_import_yc),
+    "import-feashliaa": ("Import filtered jobs from the Feashliaa feed (Stream A)", cmd_import_feashliaa,
+                         _configure_import_yc),
 }
 
 

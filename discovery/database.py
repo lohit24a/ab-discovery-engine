@@ -22,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = "data/discovery.db"
 DB_PATH_ENV = "DISCOVERY_DB_PATH"
 BUSY_TIMEOUT_MS = 30_000
+# sources.config_ref marker: a supplementary feed whose snapshots may never justify Not Seen / Closed
+NO_CLOSURE_EVIDENCE = "no-closure-evidence"
 
 
 class DatabaseConfigError(Exception):
@@ -295,13 +297,18 @@ def find_sighting(conn, source_id, source_url, external_id, is_job):
 
 
 def record_sighting(conn, source_id, source_url, *, job_id=None, company_id=None, external_id=None,
-                    provider_observed_at=None, content_hash=None, now=None):
+                    provider_observed_at=None, content_hash=None, provider_first_seen_at=None,
+                    provider_freshness=None, snapshot_at=None, now=None):
     """Insert a sighting or refresh an identical one. Returns (sighting_id, created).
 
     Identity is (source, provider external_id) or, without one, (source, URL),
     separately for jobs and companies. A repeat updates last_seen_at (and the
-    provider timestamp / content hash) instead of inserting a duplicate, and
+    provider timestamps / freshness / content hash) instead of inserting a duplicate, and
     never changes which canonical record the sighting points to.
+
+    first_seen_at / last_seen_at are OURS. provider_first_seen_at, provider_observed_at (the provider's
+    last observation) and snapshot_at (publication time of the snapshot) are the provider's and are kept
+    separately; the provider's first-seen is stored once and never overwrites ours.
     """
     now = now or utc_now()
     is_job = job_id is not None
@@ -312,19 +319,25 @@ def record_sighting(conn, source_id, source_url, *, job_id=None, company_id=None
             conn.execute(
                 """UPDATE sightings SET last_seen_at = ?, source_url = ?,
                           provider_observed_at = COALESCE(?, provider_observed_at),
-                          content_hash = COALESCE(?, content_hash)
+                          content_hash = COALESCE(?, content_hash),
+                          provider_first_seen_at = COALESCE(provider_first_seen_at, ?),
+                          provider_freshness = COALESCE(?, provider_freshness),
+                          snapshot_at = COALESCE(?, snapshot_at)
                    WHERE sighting_id = ?""",
-                (now, source_url, provider_observed_at, content_hash, row["sighting_id"]))
+                (now, source_url, provider_observed_at, content_hash, provider_first_seen_at,
+                 provider_freshness, snapshot_at, row["sighting_id"]))
             sighting_id, created = row["sighting_id"], False
         else:
             sighting_id, created = new_id(), True
             conn.execute(
                 """INSERT INTO sightings (sighting_id, source_id, job_id, company_id, external_id,
                                           source_url, first_seen_at, last_seen_at,
-                                          provider_observed_at, content_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                          provider_observed_at, content_hash, provider_first_seen_at,
+                                          provider_freshness, snapshot_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (sighting_id, source_id, job_id, company_id, external_id, source_url, now, now,
-                 provider_observed_at, content_hash))
+                 provider_observed_at, content_hash, provider_first_seen_at, provider_freshness,
+                 snapshot_at))
         if is_job:
             conn.execute("UPDATE jobs SET last_seen_at = ? WHERE job_id = ? AND last_seen_at < ?",
                          (now, job_id, now))
@@ -430,6 +443,9 @@ def append_status_event(conn, new_state, reason, *, job_id=None, company_id=None
                                       (job_id, check["source_id"])).fetchone()
             if not seen_there:
                 raise ValueError("The evidence source has never sighted this job")
+            source = conn.execute("SELECT config_ref FROM sources WHERE source_id = ?", (check["source_id"],)).fetchone()
+            if source and source["config_ref"] == NO_CLOSURE_EVIDENCE:
+                raise ValueError(f"Source '{check['source_id']}' is a supplementary feed and can never be closure evidence")
         previous = _current_state(conn, job_id, company_id)
         if previous == new_state and not allow_same_state:
             return None
@@ -594,6 +610,7 @@ def observe_job(conn, *, source_id, source_url, company_id, title, external_id=N
                 requisition_id=None, location=None, remote_eligibility=None,
                 experience_min_years=None, experience_max_years=None, experience_text=None,
                 description=None, posting_url=None, posted_at=None, provider_observed_at=None,
+                provider_first_seen_at=None, provider_freshness=None, snapshot_at=None,
                 now=None) -> JobObservation:
     """Resolve a job seen at a source, record the sighting, and note real changes.
 
@@ -643,7 +660,8 @@ def observe_job(conn, *, source_id, source_url, company_id, title, external_id=N
                 conn.execute("UPDATE jobs SET requisition_id = ? WHERE job_id = ?", (requisition_id, job_id))
         sighting_id, _ = record_sighting(conn, source_id, source_url, job_id=job_id,
                                          external_id=external_id, provider_observed_at=provider_observed_at,
-                                         content_hash=new_hash, now=now)
+                                         content_hash=new_hash, provider_first_seen_at=provider_first_seen_at,
+                                         provider_freshness=provider_freshness, snapshot_at=snapshot_at, now=now)
         if changed:
             updates = {"title": title, "normalized_title": normalize_name(title), "location": location,
                        "remote_eligibility": remote_eligibility, "experience_min_years": experience_min_years,

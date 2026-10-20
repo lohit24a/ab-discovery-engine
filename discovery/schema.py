@@ -216,5 +216,23 @@ PRAGMA user_version = 3;
 COMMIT;
 """
 
-MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3]
+# v4: provider provenance on sightings, kept separate from OUR first/last seen:
+#   provider_first_seen_at - when the provider first reported the record
+#   provider_freshness     - how the latest snapshot treated it (latest_collection / provider_retained / unknown)
+#   snapshot_at            - publication time of the newest snapshot that contained it
+# (provider_observed_at, added in v1, holds the provider's last observation of the record.)
+# Purely additive; existing rows keep NULLs.
+MIGRATION_4 = """
+BEGIN;
+
+ALTER TABLE sightings ADD COLUMN provider_first_seen_at TEXT;
+ALTER TABLE sightings ADD COLUMN provider_freshness TEXT
+    CHECK (provider_freshness IS NULL OR provider_freshness IN ('latest_collection', 'provider_retained', 'unknown'));
+ALTER TABLE sightings ADD COLUMN snapshot_at TEXT;
+
+PRAGMA user_version = 4;
+COMMIT;
+"""
+
+MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4]
 SCHEMA_VERSION = len(MIGRATIONS)

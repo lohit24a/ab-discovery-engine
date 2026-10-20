@@ -1,0 +1,14 @@
+{
+  "_comment": "TEMPORARY Day-6 volume prefilter for the Feashliaa feed. It only stops obviously irrelevant worldwide jobs from being stored. It is NOT the search profile and encodes no final role preferences; the real eight-category profile comes later. Seeded from the example role-type names in the implementation guide. Case-insensitive; each phrase must start at a word boundary (short phrases of 3 characters or fewer must also end at one). A job is kept if ANY phrase appears in its title.",
+  "title_keywords": [
+    "ai", "artificial intelligence", "machine learning", "llm", "applied ai", "implementation",
+    "founder", "founders office", "chief of staff", "strategy", "strategic", "special projects",
+    "gtm", "go-to-market", "go to market", "growth", "revenue operations", "revops", "sales engineer", "solutions",
+    "forward deployed", "deployment", "customer engineer", "technical account",
+    "product manager", "product operations", "associate product", "business operations", "program manager",
+    "operations associate", "operations analyst", "bizops",
+    "automation", "workflow", "process improvement", "no-code", "low-code",
+    "business analyst", "financial analyst", "finance", "fp&a", "analyst",
+    "venture", "incubat", "studio", "entrepreneur in residence", "investment", "associate"
+  ]
+}
