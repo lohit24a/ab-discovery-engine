@@ -302,7 +302,7 @@ def load_company_rows(conn):
 
 # Jobs seen by these sources are never appended to the review sheet until relevance and freshness rules are approved
 # (YC job pages show years-old listings; restricted JobSpy boards are never published). Existing rows and human
-# verdicts are unaffected.
+# verdicts are unaffected. Investor-board sources (ids starting inv_) are held back as well.
 UNPUBLISHED_JOB_SOURCES = ("yc_jobs", "jobspy_indeed", "jobspy_naukri", "jobspy_linkedin")
 
 
@@ -330,7 +330,7 @@ def load_publishable_job_ids(conn):
     rows = conn.execute(f"""SELECT j.job_id FROM jobs j JOIN companies c USING (company_id)
                            WHERE (json_extract(c.facts, '$.sheet_publish') IS NOT 0
                                   AND NOT EXISTS (SELECT 1 FROM sightings s WHERE s.job_id = j.job_id
-                                                  AND s.source_id IN ({marks})))
+                                                  AND (s.source_id IN ({marks}) OR s.source_id LIKE 'inv!_%' ESCAPE '!')))
                               OR EXISTS (SELECT 1 FROM verdicts v WHERE v.job_id = j.job_id)""",
                         UNPUBLISHED_JOB_SOURCES)
     return {r[0] for r in rows}

@@ -737,6 +737,151 @@ def cmd_yc_jobs_import(args, db_path=None, backup_dir=None) -> int:
     return 0 if counts.result == "success" else 2
 
 
+def _configure_inv_collect(parser):
+    parser.add_argument("--boards", required=True, help="boards to read, named one by one, e.g. accel,lightspeed")
+    parser.add_argument("--scope", choices=["jobs", "companies", "both"], default="both")
+    parser.add_argument("--location", help="apply this exact location value at the source (e.g. 'Bengaluru, Karnataka, India'); "
+                                           "the scan is then complete for that filter scope only")
+    parser.add_argument("--company-location", help="apply this exact location value to the company directory search too (only if the operator approved it; default: companies unfiltered)")
+    parser.add_argument("--max-pages", type=int, help="lower the page cap for this run (cannot exceed the board's configured cap)")
+    parser.add_argument("--max-requests", type=int, help="lower the request cap for this run (cannot exceed the configured cap)")
+    parser.add_argument("--plan", action="store_true", help="show the exact request plan only; send nothing")
+    parser.add_argument("--approved-by-operator", action="store_true",
+                        help="state that the operator approved this live read (required unless --plan)")
+
+
+def cmd_investor_boards_collect(args, http=None, sleep=None, snapshot_dir=None, config_path=None) -> int:
+    """Read-only, bounded collection of investor-board jobs/companies into a git-ignored snapshot."""
+    import dataclasses
+    import time as _time
+
+    from .adapters import investor_boards as ib
+    try:
+        boards = ib.select_boards(ib.load_boards(config_path or ib.CONFIG_PATH), args.boards)
+    except ib.InvestorBoardError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    scopes = ib.SCOPES if args.scope == "both" else (args.scope,)
+    capped = []
+    for b in boards:
+        capped.append(dataclasses.replace(b, max_pages=min(b.max_pages, args.max_pages or b.max_pages),
+                                          max_requests=min(b.max_requests, args.max_requests or b.max_requests)))
+    boards = capped
+    print("Investor-board read plan (nothing is sent unless --approved-by-operator and no --plan):")
+    total_requests = 0
+    for b in boards:
+        reqs = b.max_requests * sum(1 for sc in scopes if sc == "jobs" or (b.platform == "getro" and b.company_directory == "next_data"))
+        total_requests += reqs
+        print(f"- {b.key}: {b.name} | platform {b.platform} | {b.jobs_url if 'jobs' in scopes else b.companies_url} | scopes {list(scopes)} | filter {('location = ' + args.location) if args.location else (b.location_filter and 'location = ' + b.location_filter) or 'none'} "
+              f"| method {'GET board page, then POST cursor API with the page-issued token' if b.platform == 'consider' else ('POST client search API on ' + ', '.join(sorted(b.hosts - {b.url.split('/')[2]})) if b.api else 'GET board page(s) with embedded data')} "
+              f"| <= {b.max_pages} pages and <= {b.max_requests} requests per scope | {b.min_delay_seconds:.0f}s between requests "
+              f"| permission: {b.permission} | evidence: {b.evidence}")
+    print(f"Maximum requests in total: {total_requests}; about {round(total_requests * 3 / 60, 1)} minutes at most. "
+          "Writes: a git-ignored snapshot only (no SQLite, no Sheets).")
+    if args.plan:
+        print("PLAN ONLY: nothing was requested.")
+        return 0
+    if not args.approved_by_operator:
+        print("[REFUSED] --approved-by-operator is required for a live read")
+        return 1
+    snapshot = ib.collect(boards, http=http, sleep=sleep or _time.sleep, scopes=scopes, location=args.location, company_location=getattr(args, "company_location", None))
+    path = ib.write_snapshot(snapshot, snapshot_dir)
+    print("\n".join(_render_inv_summary(ib.summarize(snapshot))))
+    print(f"\nSnapshot saved (temporary, git-ignored): {path}")
+    print("Nothing was written to SQLite, Google Sheets TEST or LIVE. Import needs a separate approval: "
+          "python -m discovery investor-boards-import --snapshot <file> [--apply]")
+    complete = all(s["complete"] for b in snapshot["boards"] for k, s in b["scopes"].items() if k == "jobs")
+    return 0 if complete else 2
+
+
+def _render_inv_summary(s):
+    lines = []
+    for b in s["boards"]:
+        for scope, r in b["scopes"].items():
+            tag = "COMPLETE" + (" (verified empty)" if r["verified_empty"] else "") if r["complete"] else r["status"].upper()
+            lines.append(f"{b['key']} [{b['platform']}] {scope}: {tag} | records {r['records']} | reported total "
+                         f"{r['reported_total'] if r['reported_total'] is not None else 'n/a'} | pages {r['pages_completed']}/"
+                         f"{r['pages_requested']} | requests {r['requests']}"
+                         + (f" | stopped: {r['stopped']}" if r["stopped"] else "") + (f" | error: {r['error']}" if r["error"] else ""))
+            lines.extend(f"    anomaly: {a}" for a in r["anomalies"][:6])
+    t = s["totals"]
+    lines.append(f"Totals observed: {t['jobs']} jobs, {t['companies']} companies, {t['requests']} requests. A listing on a board is "
+                 "NOT proof a job is open; a partial or failed scan is never evidence of absence.")
+    if "identity" in s:
+        i = s["identity"]
+        lines.append(f"If imported: companies {i['company_resolution']} (possible name-only duplicates left unmerged: "
+                     f"{i['companies_with_possible_name_duplicates']}); jobs new {i['jobs_new_if_imported']}, attach to an existing job by "
+                     f"identical employer URL {i['jobs_attach_by_employer_url']} (ambiguous URL {i['jobs_ambiguous_url']}), already known "
+                     f"{i['jobs_already_known']}; possible duplicate jobs across boards {i['possible_duplicate_jobs_across_boards']}")
+    return lines
+
+
+def _configure_inv_report(parser):
+    parser.add_argument("--snapshot", required=True, nargs="+", help="one or more snapshots written by investor-boards-collect")
+
+
+def cmd_investor_boards_report(args) -> int:
+    from .adapters import investor_boards as ib
+    try:
+        for path in args.snapshot:
+            snap = ib.load_snapshot(path)
+            print(f"== {path}")
+            print("\n".join(_render_inv_summary(ib.summarize(snap))))
+    except ib.InvestorBoardError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    return 0
+
+
+def _configure_inv_import(parser):
+    parser.add_argument("--snapshot", required=True)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--dry-run", action="store_true", help="show what would change (default)")
+    group.add_argument("--apply", action="store_true", help="back up the database, then import (needs the operator's approval)")
+
+
+def cmd_investor_boards_import(args, db_path=None, backup_dir=None) -> int:
+    from . import database
+    from .adapters import investor_boards as ib
+    from .adapters import jobspy_source as js
+    from .schema import SCHEMA_VERSION
+    try:
+        snapshot = ib.load_snapshot(args.snapshot)
+    except ib.InvestorBoardError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    path_db = db_path or database.resolve_db_path(PROJECT_ROOT)
+    if not path_db.is_file():
+        print("[REFUSED] database not initialized; run: python -m discovery init-db")
+        return 1
+    ro = database.connect(path_db, readonly=True)
+    try:
+        version = database.get_schema_version(ro)
+        print("\n".join(_render_inv_summary(ib.summarize(snapshot, ro))))
+    finally:
+        ro.close()
+    if not args.apply:
+        print("\nDRY RUN: nothing was written. Re-run with --apply only after the operator approves the import.")
+        return 0
+    if version != SCHEMA_VERSION:
+        print("[REFUSED] database schema is out of date; back it up and run init-db first")
+        return 1
+    backup = js.verified_backup(path_db, backup_dir, label="pre-investor-boards-import")
+    print(f"Verified backup: {backup}")
+    conn = database.connect(path_db)
+    try:
+        c = ib.import_snapshot(conn, snapshot)
+        fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+        quick = conn.execute("PRAGMA quick_check").fetchone()[0]
+    finally:
+        conn.close()
+    print(f"Imported run {c.run_id}: companies created {c.companies_created}, linked by domain {c.companies_linked_by_domain}, "
+          f"existing {c.companies_existing_sighting}, ambiguous (unlinked) {c.companies_ambiguous}; jobs created {c.jobs_created}, "
+          f"attached to existing jobs {c.jobs_attached}, changed {c.jobs_changed}, unchanged {c.jobs_unchanged}; errors {len(c.errors)}; integrity "
+          f"{'ok' if quick == 'ok' and not fk else 'PROBLEM'}")
+    return 0 if c.result == "success" else 2
+
+
 COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
     "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
@@ -747,6 +892,11 @@ COMMANDS = {
     "run": ("Run the requested sources and preview/apply the TEST sync (manual, one report)", cmd_run, _configure_run),
     "report": ("Show the consolidated report of a recorded discovery run", cmd_report, _configure_report),
     "restricted-policy": ("Show the restricted job-board policy (read-only)", cmd_restricted_policy, _configure_restricted_policy),
+    "investor-boards-collect": ("Read investor/accelerator boards into a snapshot (bounded, read-only; operator-approved)",
+                                cmd_investor_boards_collect, _configure_inv_collect),
+    "investor-boards-report": ("Read-only report over saved investor-board snapshots", cmd_investor_boards_report, _configure_inv_report),
+    "investor-boards-import": ("Import an investor-board snapshot after YOUR approval (dry-run by default)",
+                               cmd_investor_boards_import, _configure_inv_import),
     "yc-jobs-collect": ("Collect public YC company job pages into a snapshot (read-only; user-attested authorization)",
                         cmd_yc_jobs_collect, _configure_yc_jobs_collect),
     "yc-jobs-report": ("Read-only coverage/freshness report over saved yc_jobs snapshots (optional CSV)",
