@@ -28,5 +28,11 @@ When the user manually starts a run, the system finds relevant **jobs (A)** and 
 - Don't touch the LIVE sheet before the guide's pre-LIVE checklist passes; source-parser fixes need tested confirmation before LIVE runs.
 - Keep the project outside synced folders (OneDrive/Dropbox); never delete the SQLite DB to "start fresh".
 
+## Source audits (mandatory)
+Before implementing any new source adapter (Feashliaa, JobSpy, YC job pages, investor boards, MCP/API sources...), inspect the real upstream repository/dataset/API and write `docs/source_audits/<source_name>.md` first. Follow the 17-step checklist in the guide section "Mandatory Source Repository and API Review Before Every New Integration". If the source differs materially from the guide, explain it and get approval before changing the architecture. Do not assume a source is current because its repository exists, and measure contribution to our target opportunities, not advertised volume.
+
+## Documentation rule
+At the end of every implementation day or major milestone, update `AB_Discovery_Engine_Implementation_Guide.md` (Status and Decision Log, Outstanding Issues) BEFORE committing and pushing: what was completed and tested, what changed from the plan and why, remaining debt, new source assumptions, next step. Keep the original plan text and approved objectives intact and traceable. Geography labels are descriptive only: never treat company location as a permanent job-eligibility exclusion, and never treat "remote" as proof of India eligibility.
+
 ## Boundaries
 Do not add custom web apps, hosting, cloud databases, or commercial infrastructure. Do not expand scope or redesign without approval — refer back to this file and the guide.

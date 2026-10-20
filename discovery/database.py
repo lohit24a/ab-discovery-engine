@@ -525,6 +525,45 @@ def _add_alias(conn, company_id, name, now):
                      (json.dumps(aliases), now, company_id))
 
 
+def update_company_details(conn, company_id, *, name=None, location=None, aliases_add=(),
+                           facts_patch=None, now=None) -> bool:
+    """Refresh source-reported details of a company without touching its identity (UUID).
+
+    A different name replaces the display name and the old name is kept as an alias.
+    Missing values (None / empty) never erase stored ones. facts_patch replaces whole
+    top-level keys of the facts JSON, leaving other keys alone. Returns True if anything changed;
+    an identical update leaves updated_at untouched.
+    """
+    now = now or utc_now()
+    with transaction(conn):
+        company = get_company(conn, company_id)
+        if company is None:
+            raise KeyError(f"Unknown company_id {company_id}")
+        new_name, new_norm = company["name"], company["normalized_name"]
+        aliases = json.loads(company["aliases"])
+        if name and normalize_name(name) != company["normalized_name"]:
+            aliases.append(company["name"])
+            new_name, new_norm = name, normalize_name(name)
+        known = {new_norm, *(normalize_name(a) for a in aliases)}
+        for alias in aliases_add:
+            if alias and normalize_name(alias) not in known:
+                aliases.append(alias)
+                known.add(normalize_name(alias))
+        new_location = location if location else company["location"]
+        facts = json.loads(company["facts"])
+        facts.update(facts_patch or {})
+        new_facts = json.dumps(facts, sort_keys=True)
+        if (new_name, json.dumps(aliases), new_location, new_facts) == (
+                company["name"], company["aliases"], company["location"],
+                json.dumps(json.loads(company["facts"]), sort_keys=True)):
+            return False
+        conn.execute(
+            """UPDATE companies SET name = ?, normalized_name = ?, aliases = ?, location = ?, facts = ?,
+                      updated_at = ? WHERE company_id = ?""",
+            (new_name, new_norm, json.dumps(aliases), new_location, new_facts, now, company_id))
+        return True
+
+
 def observe_company(conn, *, source_id, source_url, name, external_id=None, domain=None,
                     location=None, provider_observed_at=None, now=None):
     """Resolve a company seen at a source and record the sighting. Returns (company_id, created).

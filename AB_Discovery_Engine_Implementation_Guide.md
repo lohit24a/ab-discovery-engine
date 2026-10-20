@@ -3,7 +3,7 @@
 **Plan:** Hybrid source discovery, implemented locally in Python, with SQLite memory and Google Sheets review  
 **Document version:** 1.0 · **Prepared:** 19 October 2026  
 **Target computer:** Windows 10/11 · **Operator:** You, using Claude Code  
-**Status:** A build plan — none of the commands below have been run on your computer yet.
+**Status:** Originally a build plan. **Implementation is under way; see the "Project Implementation Status and Decision Log" at the end of this document for what is actually built, what changed from this plan (for example Python 3.14.3 instead of 3.12) and why. Where the log and the original text below disagree, the log is authoritative.** The original plan text is kept unchanged for traceability.
 
 > **One-sentence goal:** Whenever you choose to run discovery, the system searches for relevant **jobs (A)** and promising **companies (B)**, links them, avoids duplicates, remembers previous runs, and puts roughly 20–30 worthwhile new or changed items in Google Sheets.
 
@@ -1075,3 +1075,178 @@ Judge each tested connector on:
 7. Whether the source can be used repeatedly and reliably.
 
 A connector usable only interactively through Claude cannot become part of the scheduled-free, Python-authoritative `/run-discovery` pipeline unless criterion 6 is met; any such use must be proposed and approved before implementation, consistent with `CLAUDE.md`.
+
+---
+
+## Project Implementation Status and Decision Log
+
+**Last updated:** 2026-10-20 (end of Day 5). **Purpose:** the authoritative record of what was planned, what is actually implemented, what changed and why, and what remains. A new Claude Code conversation with no chat history should be able to continue from this section plus `CLAUDE.md`. Everything above this section is the original plan and is deliberately left unedited.
+
+### Status at a glance
+
+| Day | Original plan focus | Status | Git reference | Automated tests at checkpoint |
+|---|---|---|---|---|
+| 1 | Windows setup | **Complete** | `6ee532b` Initial project setup | none yet |
+| 2 | Google Sheets + credentials | **Complete** | `ca8d806` | none (read-only doctor script verified manually) |
+| 3 | Project skeleton + SQLite | **Complete** | `550d4d3`, `29173fb`, `6368458` (+ `9c0984a` appendix) | 7 → 31 → 67 |
+| 4 | Safe Sheets sync | **Complete** | `73244c0`, `ddcd72a` | 106 → 116 |
+| 5 | YC company feed (Stream B) | **Complete** (includes the approved D-09 label refresh) | commit "Day 5: Add YC company discovery and implementation history" (hash in `git log`) | 159 → 162 |
+| 6 | Feashliaa supporting feed (A) | **Pending** (next; needs the mandatory source audit first) | - | - |
+| 7-16 | per original plan | **Pending** | - | - |
+
+Milestone 1 ("data and memory work") is **not** reached yet: Stream A (jobs) has no collector, there is no `run` pipeline and no `/run-discovery` Skill.
+
+### Deviations from the original plan (applies to all days)
+
+| ID | Original plan | What was actually done | Why |
+|---|---|---|---|
+| D-01 | Python 3.12.x | **Python 3.14.3** in `.venv` (`py -3.14 -m venv .venv`) | The operator already had 3.14.3 installed and instructed that no other Python be installed. Every dependency installed and tests pass on 3.14.3 (see Day 1). If a future dependency is incompatible (e.g. JobSpy on Day 8), report it; never switch Python silently. |
+| D-02 | `python -m discovery doctor` also tests Google credentials | The local `doctor` is offline and read-only; Google checks live in the separate, read-only `scripts/doctor_sheets.py` | Keeps the everyday health check free of network and credential access. |
+| D-03 | Four-table-per-concept sketch, modules `dedupe.py`, `lifecycle.py`, `entities.py` etc. | Identity, dedupe, lifecycle guards and repository functions live in `discovery/database.py`; schema in `discovery/schema.py` | Smaller surface while only SQLite logic exists. Split later if it grows. |
+| D-04 | Schema listed as eight tables | Still exactly eight tables; **three migrations** (v1 base, v2 `jobs.requisition_id` + closure-evidence trigger, v3 nullable `verdicts.decision` for notes-only reviews) | Needs found while testing identity (Day 3) and review workflow (Day 4). |
+| D-05 | Company and job share lifecycle states | Only **jobs** have a lifecycle; company-level status events are rejected by `append_status_event` | A closed vacancy says nothing about whether a company is interesting or alive; company interest is expressed by the human verdict. |
+| D-06 | Write to the Sheet freely during development | Sheets sync can only target **TEST**; LIVE is blocked in code and in the CLI | Safety rule: LIVE stays untouched until the pre-LIVE checklist passes and a separate authorization is given. |
+| D-07 | Spreadsheets created by Claude | The operator created the TEST and LIVE spreadsheets; tabs were set up via the Google Sheets connector | The connector can read and edit but cannot create files. |
+| D-08 | YC `website` becomes the company domain | Source-reported website is a **fact** (`facts.yc.website_reported`), not `companies.domain` | `domain` means "verified" and is uniquely indexed; YC data has missing, scheme-less and shared hosts. |
+| D-09 | n/a (new in Day 5 review) | Geographic label `explicitly_incompatible` renamed to **`no_india_evidence_yet`** in code, tests and, after approval, in the 3,006 stored company records (refresh run `80a79aee…`, 2026-10-20) | The old name overstated the evidence: a company located outside India with no remote hint is not "incompatible" with hiring India-based candidates. |
+
+Planned-layout items from section 20 that **do not exist yet**: `README.md`, `pyproject.toml`, `config/search_profile.yaml`, `config/ranking.yaml`, `config/sources.yaml`, `.claude/skills/run-discovery/SKILL.md`, `discovery/pipeline.py`, `filters.py`, `scoring.py`, `imports.py`, `backups.py`, the `run`/`import`/`report`/`backup` commands, `tests/fixtures/benchmark_2026-10-18.csv`, PyYAML, rapidfuzz and cleanco (not installed). Backups so far are manual SQLite backups in the git-ignored `backups/` folder.
+
+### Day 1 - Environment and project setup (Complete)
+
+- **Objective:** a working Windows toolchain and project folder.
+- **Planned:** install Python 3.12, Git, VS Code, Claude Code; create `C:\Users\<user>\Projects\ab-discovery-engine`, `git init`, `.venv`.
+- **Done:** project at `C:\Users\lohit\Projects\ab-discovery-engine` (outside any synced folder). Existing Python 3.14.3, Git 2.53.0, VS Code and Claude Code Desktop were reused; nothing was reinstalled. `.venv` created with the 3.14 launcher. `.gitignore` (excludes `.venv/`, `.env`, `.secrets/`, `*.db`/`*.sqlite*`, logs, caches, `data/*`, `backups/`) and `CLAUDE.md` (scope and safety rules) written. Private GitHub repository `lohit24a/ab-discovery-engine` connected; branch `main`.
+- **Changes and reasons:** D-01 (Python 3.14.3). Git Credential Manager kept returning a different saved GitHub account, so this repository's `.git/config` uses the GitHub CLI credential helper for `lohit24a` (repo-local only; global settings and the other saved credential were left alone).
+- **Verification:** `.venv\Scripts\python.exe --version` = 3.14.3. All later dependencies (`requirements.txt`: gspread 6.2.1, google-auth 2.62.0, python-dotenv 1.2.4, pytest 9.1.1 and their dependencies) installed without error; `pip check` reports no broken requirements; the full suite passes on 3.14.3.
+- **Limitations:** none known. Dependencies planned for later days (JobSpy, rapidfuzz, cleanco, trafilatura, PyYAML...) have **not** been tested on 3.14 yet.
+
+### Day 2 - Google Sheets authentication (Complete)
+
+- **Objective:** Python can read the TEST spreadsheet with a dedicated identity.
+- **Planned:** two spreadsheets with four tabs, Google Cloud project, Sheets/Drive APIs, service account, JSON key in `.secrets/`, `.env`, a read-only `doctor`.
+- **Done:** Google Cloud project `ab-discovery-engine`, Sheets and Drive APIs enabled, service account `ab-discovery-sheets` (key stored at `.secrets/google-service-account.json`, git-ignored, never printed). Spreadsheets `A+B Discovery - TEST` and `A+B Discovery - LIVE`, each with tabs Shortlist, Posts, Companies, Runs, shared with the service account as Editor. `.env` holds the two sheet IDs and the credential path. `scripts/doctor_sheets.py` authenticates with the read-only scope, opens TEST, checks the four tabs and reads a range. `requirements.txt` pinned.
+- **Changes and reasons:** D-02, D-07.
+- **Verification:** doctor exit 0; confirmed no write calls (read-only scope). Commit `ca8d806`.
+- **Limitations:** the LIVE sheet has never been accessed by Python.
+
+### Day 3 - SQLite foundation (Complete)
+
+- **Objective:** a local database that remembers companies, jobs, sightings and decisions across manual runs.
+- **Planned:** project skeleton, eight tables, migrations, identity and replay tests.
+- **Done (three steps):**
+  - *Step 1* (`550d4d3`): `discovery/` package, `argparse` CLI, offline read-only `python -m discovery doctor`, `.env.example`, `.gitkeep` folders, 7 tests.
+  - *Step 2* (`29173fb`): `schema.py` (versioned migrations via `PRAGMA user_version`), `database.py` (connection with foreign keys, WAL, busy timeout, explicit transactions, repository functions), `init-db` command, doctor database checks. Tables: `companies`, `jobs`, `sources`, `sightings`, `runs`, `source_checks`, `status_events`, `verdicts`. 31 tests.
+  - *Step 3* (`6368458`): migration 2, `observe_company` / `observe_job`, URL normalization, content hashes, replay-safe runs and source checks, Not Seen/Closed only with a successful complete source check (enforced by a trigger), append-only status events, 67 tests.
+- **Identity rules implemented:** companies match by **verified domain only**, or by a source's own ID/URL for provisional companies; never by name. Jobs match by (source, provider ID/URL) or by employer requisition ID within one company; same title/location alone never merges. Conflicting evidence raises `IdentityConflict` instead of merging. Failed, partial, skipped or unverified checks can never close a job. Verdicts are only changed by explicit `save_verdict` calls.
+- **Changes and reasons:** D-03, D-04, D-05. The MCP/API evaluation backlog appendix was added in `9c0984a` (research backlog only).
+- **Limitations:** merging two provisional companies later proved equivalent is manual and not built; sightings are not linked to the source-check scope that produced them; no job-closure policy exists; multi-source disagreement on a job's fields is not arbitrated.
+
+### Day 4 - Google Sheets synchronization (Complete)
+
+- **Objective:** a human can review in Sheets and decisions survive every sync.
+- **Planned:** two-way sync keyed by record ID, verdict/notes protected, sort-safe, repeat-safe.
+- **Done:** `discovery/sheets_schema.py` (column specification and ownership: key / machine / human), `discovery/sheets_sync.py` (read everything first, validate headers and IDs, reconcile human fields, plan, re-check IDs, import verdicts into SQLite, batched writes), CLI `sync --target test [--dry-run]`. Migration 3 allows a note with no verdict (`decision` NULL) and `save_verdict` keeps any field left unspecified. Human columns are only filled or restored, never replaced by blanks; machine columns flow only SQLite → sheet; rows are matched by `record_id` and columns by header name; duplicate or unknown IDs abort the sync before any write; conflicts (both sides changed) are reported and nothing is overwritten; a sync with conflicts is recorded as `partial`.
+- **Verification:** 106 tests at `73244c0`, 116 at `ddcd72a`; TEST-only integration with fictional records (initial sync, verdict import, row sorting via the connector, repeated syncs with zero writes); the fictional rows were removed with approval; the real database was backed up before migration 3.
+- **Changes and reasons:** D-06; Runs tab lists discovery/import runs only (sync bookkeeping runs are hidden so repeated syncs make no sheet changes); worksheet lookups are cached and HTTP 429 is retried because the first demo hit Google's per-minute read quota.
+- **Limitations:** intentionally clearing a verdict or note from the sheet is not supported (a blank cell restores the stored value; Python can clear explicitly); Google Sheets has no atomic compare-and-swap so editing during a sync can still race (documented in `sheets_sync.py`); Shortlist stays empty until ranking exists.
+
+### Day 5 - YC company discovery (Complete; see D-09)
+
+- **Objective:** Stream B: discover YC companies whether or not they are hiring.
+- **Planned:** YC company importer; companies stored with websites and source dates.
+- **Done:** live audit of `yc-oss/api` recorded in `docs/source_audits/yc_oss.md` (unofficial dataset produced daily from YC's public search index; 6,311 companies matching `meta.json`). `discovery/adapters/yc_companies.py` fetches `meta.json` and `companies/all.json` (timeouts, bounded size, retries, schema-change detection, stale and count-mismatch detection, refusal of snapshots older than data already imported), normalizes records, classifies India evidence deterministically, and imports idempotently in transaction batches. CLI `import-yc --dry-run | --apply`.
+- **Results (verified from the database and recorded runs on 2026-10-20):**
+  - 6,311 source records → 6,311 canonical companies and 6,311 YC sightings (6,311 distinct YC IDs); 0 malformed, 0 identity conflicts, 0 duplicates. Two runs recorded (`b0bd05ba…` created 6,311; `a8f987c6…` created 0 / unchanged 6,311), both `success` with a complete source check. All companies are `provisional` with no verified domain; 0 jobs, 0 status events, 0 verdicts.
+  - The YC hiring flag is stored only as `facts.yc.is_hiring_reported` ("YC-reported, unverified"). 1,494 companies report `true`; no company was excluded for `false`, including 173 India-based ones.
+  - Source-reported websites are not verified domains (D-08). Two website hosts shared by two companies each were reported and not merged.
+  - **All 6,311 companies are stored in SQLite; only the relevant subset is published to Google Sheets.** `facts.sheet_publish` is true for the 224 `india_based` companies, which were synchronized to the TEST Companies tab (224 rows, each once, IDs equal to SQLite, Domain blank, YC facts shown as "YC-reported"). Companies outside the subset reach the sheet only if they carry a human verdict or note.
+  - Classification at import: `india_based` 224; `potentially_relevant` 1,124 (fully remote per YC, India eligibility **unconfirmed**; remote never implies India eligibility); `unverified` 1,957; `no_india_evidence_yet` 3,006 (first imported under the older name `explicitly_incompatible`; renamed in storage by a third import run, see D-09 and the next subsection).
+  - Spot check of four companies against their public YC pages (DocVita, RocketSDR, Increase, 42Floors) matched on batch, location, website and status.
+  - LIVE spreadsheet untouched. No YC job pages were collected.
+- **Verification:** 159 tests at the first Day 5 review, 162 after the classification correction; `pip check` clean; doctor 18 PASS; repeated import and repeated sync produce no changes.
+- **Source limitations:** unofficial dataset; depends on a key scraped from YC's own page and on a daily GitHub Action (could break or lag); only publicly launched companies; `isHiring` is unreliable (110 of the 159 Active India companies show `false` although some may hire); `changes/latest.json` covers only the latest day.
+
+### Geographic classification terminology (Day 5 review, decision D-09)
+
+- **Where calculated and used:** `classify_location` in `discovery/adapters/yc_companies.py` from YC's `all_locations` and `regions`. The result is persisted in `companies.facts.india_relevance` (`class`, `reason`) and drives only one boolean, `facts.sheet_publish` (true for `india_based`), which controls whether a *new* row is added to the review sheet. It is also shown in the Details text of published rows (all `india_based`). It is not used to filter, exclude, rank or close anything.
+- **Problem:** `explicitly_incompatible` (3,006 companies; 2,586 are US-only) meant "locations listed only outside India and no remote hint in YC's data". That is a lack of India evidence, not an explicit restriction.
+- **Decision:** rename to **`no_india_evidence_yet`**, reword the reason ("... no India evidence yet (not an eligibility restriction)"), and document that company geography is never a permanent job-eligibility ruling: the label is recomputed on every import (a company that later lists an Indian office moves to `india_based` and appears in the sheet; covered by a test). Remote-first/fully-remote stays `potentially_relevant`, never "India eligible".
+- **Production-data change (approved and applied 2026-10-20):** after a dry-run preview ("stored facts to refresh: 3006", 0 new) and a verified backup (`backups/discovery_pre-label-refresh_*.db`), `import-yc --apply` ran as run `80a79aee…`: 3,006 companies refreshed, 3,305 unchanged, 0 created. Counts afterwards: `india_based` 224, `potentially_relevant` 1,124, `unverified` 1,957, `no_india_evidence_yet` 3,006; 6,311 companies and sightings, no duplicates; a following dry-run shows 0 facts to refresh. The 224-company TEST subset and its rows were not changed by the refresh (no TEST row displayed the old label). That run also moved the companies' last-seen time, so the next `sync --target test` will rewrite the Last Seen cell of the 224 rows and add the new import run to the Runs tab (verified by dry-run: only the Last Seen column differs); this sync had not been run at the end of Day 5.
+
+### Current system snapshot (end of Day 5)
+
+- **Runtime:** Python 3.14.3, `.venv`; SQLite schema version 3 at `data/discovery.db` (git-ignored); backups in `backups/` (git-ignored).
+- **Commands:** `doctor`, `init-db`, `sync --target test [--dry-run]`, `import-yc --dry-run | --apply`; `scripts/doctor_sheets.py` (read-only Google check). No `run`, `import`, `report` or `backup` commands yet.
+- **Data:** 6,311 companies / 6,311 sightings (YC only), 0 jobs; three YC import runs recorded. TEST sheet: Companies 224 rows, Posts 0, Runs 2 (a third import run is not yet synced), Shortlist 0.
+- **Next planned step:** Day 6 - Feashliaa supporting feed (Stream A) per section 9, starting with the mandatory source audit below.
+
+---
+
+## Mandatory Source Repository and API Review Before Every New Integration
+
+This is a required engineering step for **Day 6 onward** and for every future source (Feashliaa, JobSpy, YC job pages, investor boards, MCP/API candidates, and all others). No adapter code is written until the audit exists and has been reviewed.
+
+Before implementing a source adapter, inspect the actual upstream repository, published dataset, source code or official API documentation, and for each source:
+
+1. Confirm the official repository or provider and the exact URL.
+2. Review the README, installation instructions and architecture.
+3. Check recent commits, releases, open issues and maintenance activity.
+4. Identify which code can be reused versus which live datasets can be consumed.
+5. Inspect real sample responses or data files.
+6. Verify field names, formats, identifiers, pagination and missing values.
+7. Check source timestamps, freshness and historical retention behavior.
+8. Identify access requirements, rate limits and potential usage restrictions.
+9. Review whether the source is relevant to Bengaluru, India and India-eligible remote opportunities.
+10. Identify overlapping coverage with our existing discovery sources.
+11. Evaluate failure modes, incomplete data and potential identity conflicts.
+12. Choose the simplest reliable integration: published feed, official API or adapted reader code.
+13. Create an integration plan before implementing the adapter.
+14. Create tests using representative fixtures.
+15. Perform a dry run before any production database update.
+16. Verify repeated runs do not create duplicates.
+17. Record observed behavior, source version and important design decisions.
+
+Findings go in `docs/source_audits/<source_name>.md` and must include: inspection date, source URLs, relevant commit/version, data schema, update behavior, integration choice, risks and test findings. `docs/source_audits/yc_oss.md` is the reference example.
+
+Rules: if the source behaves substantially differently from this guide, explain the difference and obtain approval before changing the architecture. Do not assume a source is current because its GitHub repository exists. Do not add a source merely because it advertises millions of jobs; measure its contribution to our actual target opportunities.
+
+---
+
+## Outstanding Issues and Deferred Improvements
+
+Legend: **KL** known limitation · **FI** future improvement · **REQ** requirement for a later implementation step · **BLOCKER** actually blocks progress. No item below is complete, and none is currently a BLOCKER.
+
+| Item | Type | Detail / where it belongs |
+|---|---|---|
+| Company domain verification and manual identity reconciliation | KL + REQ | YC companies are `provisional`; `set_company_domain` raises `IdentityConflict` when a verified owner exists. A reviewed merge/reconciliation tool is needed before multi-source company overlap (Days 9-10). |
+| Source sightings not linked to the collection scope | KL | `source_checks.scope` exists but sightings do not record which scope produced them; closure evidence is checked by source only. Link before building any closure/Not Seen logic. |
+| Conflicting information from multiple job sources | KL + REQ | A job's fields are updated by whichever source reports a change last; arbitration rules are needed (Day 11). |
+| Full job lifecycle / closure policy | REQ | Only the safety mechanism exists (Not Seen/Closed need a successful complete check). The policy itself, and moving jobs out of `Changed`, are undecided (Day 11). |
+| Intentionally clearing verdicts or notes from Sheets | FI | Blank cells restore stored values. Python can clear explicitly. A sheet-side mechanism (e.g. a CLEAR token) needs an approved design. |
+| Google Sheets concurrent-edit race | KL | No atomic compare-and-swap; documented in `sheets_sync.py`; do not edit during a sync. |
+| LIVE spreadsheet | REQ | Blocked in code; enabling needs the Day 15 checklist plus separate explicit authorization. |
+| Review-sheet size for YC | FI | 224 India-based rows include 43 Inactive and 20 Acquired companies. Narrowing (for example Active/Public) is the operator's decision; not applied. |
+| International companies needing verified India-eligible job evidence | REQ | `potentially_relevant` (1,124) and `no_india_evidence_yet` (3,006) stay in SQLite; their jobs must be judged on job-level India evidence once job sources exist. Company geography is never a permanent exclusion. |
+| YC job-page discovery, including companies marked not hiring | REQ (Day 9) | Not started. `isHiring` must not decide which companies are examined. |
+| Feashliaa, JobSpy, investor-board integrations | REQ (Days 6, 8, 10) | Not started; each needs the mandatory source audit first. JobSpy and other packages are untested on Python 3.14. |
+| Search profile, ranking, Shortlist, filters, manual import, benchmark, `/run-discovery` Skill, README, `pyproject.toml`, backup command | REQ (Days 7, 12-16) | Not started. PyYAML would be added with the profile (needs approval). |
+| MCP / external job API evaluation backlog | FI | Documented in the earlier appendix; nothing installed or validated. |
+| YC source dependency risk | KL | Unofficial dataset relying on a key scraped from YC's website and a daily GitHub Action. |
+| TEST sheet one sync behind | KL (trivial) | After the label refresh, Last Seen (224 cells) and one Runs row await the next `sync --target test`. Nothing else differs. |
+
+---
+
+## Documentation Update Rule
+
+At the end of every implementation day or major milestone, **update this guide before committing and pushing.** The update must capture:
+
+1. What was completed.
+2. What was tested.
+3. What changed from the original plan.
+4. Why the change was necessary.
+5. Any remaining technical debt or unresolved decision.
+6. New or changed source assumptions.
+7. The next planned step.
+
+Keep the original architecture and decisions traceable: append to the Status table, add a per-day record and decision-log rows, and update "Outstanding Issues". Never silently change previously approved objectives or rewrite the original plan text. Day records must be based on actual files, Git history and test results.

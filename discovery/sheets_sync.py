@@ -273,18 +273,44 @@ def load_company_rows(conn):
     for c in conn.execute("SELECT * FROM companies ORDER BY created_at, company_id"):
         seen, states = sightings.get(c["company_id"], []), jobs.get(c["company_id"], [])
         aliases = json.loads(c["aliases"])
+        facts = json.loads(c["facts"])
+        yc = facts.get("yc") or {}
         details = f"Identity: {c['identity_status']}" + (f"; also known as: {', '.join(aliases)}" if aliases else "")
         live = sum(1 for s in states if s in LIVE_STATES)
+        hiring = (f"{live} of {len(states)} observed job(s) currently live" if states else "No jobs observed")
+        if yc:  # source-reported YC facts, labelled as such
+            bits = [yc.get("batch"), yc.get("stage"), yc.get("status"), yc.get("industry"),
+                    f"team {yc['team_size']}" if yc.get("team_size") else None,
+                    f"site (YC-reported): {yc['website_domain_reported']}" if yc.get("website_domain_reported") else None,
+                    (relevance := facts.get("india_relevance")) and f"India relevance: {relevance['class']}",
+                    yc.get("one_liner")]
+            details += " | YC: " + " · ".join(b for b in bits if b)
+            details = details[:500]
+            flag = yc.get("is_hiring_reported")
+            if flag is not None:
+                hiring += f"; YC-reported hiring flag: {'true' if flag else 'false'} (unverified)"
         out[c["company_id"]] = {
             "Company": c["name"], "Domain": _s(c["domain"]), "Location": _s(c["location"]),
             "Details": details, "Sources": ", ".join(sorted({x["source_name"] for x in seen})),
-            "Hiring Evidence": (f"{live} of {len(states)} observed job(s) currently live"
-                                if states else "No jobs observed"),
+            "Hiring Evidence": hiring,
             "First Seen": min((x["first_seen_at"] for x in seen), default=""),
             "Last Seen": max((x["last_seen_at"] for x in seen), default=""),
             "Score": "", "Explanation": "",
         }
     return out
+
+
+def load_publishable_company_ids(conn):
+    """Companies that may get a NEW row in the review sheet.
+
+    A company whose facts say sheet_publish = false (e.g. outside the India-relevant subset) stays in
+    SQLite but is not added to the sheet - unless it has a human verdict/note. Companies already in
+    the sheet are still kept up to date, and companies with no flag (older data) are published.
+    """
+    rows = conn.execute("""SELECT company_id FROM companies c
+                           WHERE json_extract(c.facts, '$.sheet_publish') IS NOT 0
+                              OR EXISTS (SELECT 1 FROM verdicts v WHERE v.company_id = c.company_id)""")
+    return {r[0] for r in rows}
 
 
 def load_run_rows(conn):
@@ -395,8 +421,12 @@ def _row_for(state, record_id, machine, human):
     return cells
 
 
-def _plan_keyed_tab(state, found, data, human_for, report, tab_label):
-    """Plan header, updates and appended rows for Posts / Companies / Runs."""
+def _plan_keyed_tab(state, found, data, human_for, report, tab_label, appendable=None):
+    """Plan header, updates and appended rows for Posts / Companies / Runs.
+
+    appendable: optional set of record ids allowed to receive a NEW row (rows already in the sheet are
+    always kept up to date).
+    """
     plan = TabPlan()
     if state.needs_headers:
         plan.header_cells = {f"{col_letter(i)}1": n for i, n in enumerate(column_names(state.tab))}
@@ -413,7 +443,7 @@ def _plan_keyed_tab(state, found, data, human_for, report, tab_label):
                     report.kept_nonblank += 1
                     continue
                 plan.updates[f"{col_letter(state.col[name])}{row_num}"] = new
-        else:
+        elif appendable is None or rid in appendable:
             plan.appends.append(_row_for(state, rid, values, human_for(rid, restore_only=True)))
     report.appended[state.tab] = len(plan.appends)
     report.cells_updated[state.tab] = len(plan.updates)
@@ -506,7 +536,8 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
     for tab, data in (("Posts", posts), ("Companies", companies), ("Runs", runs)):
         def human_for(rid, restore_only=True, _tab=tab):
             return restores[_tab].get(rid, {"cells": {}})["cells"] if _tab != "Runs" else {}
-        plans[tab] = _plan_keyed_tab(states[tab], found[tab], data, human_for, report, tab)
+        plans[tab] = _plan_keyed_tab(states[tab], found[tab], data, human_for, report, tab,
+                                     appendable=load_publishable_company_ids(conn) if tab == "Companies" else None)
         if tab != "Runs":
             for rid, info in restores[tab].items():
                 if info["row"] is not None:

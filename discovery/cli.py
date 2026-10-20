@@ -187,11 +187,85 @@ def cmd_sync(args) -> int:
     return 2 if report.conflicts else 0
 
 
+def _configure_import_yc(parser):
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true",
+                      help="fetch and analyse the YC dataset; change nothing")
+    mode.add_argument("--apply", action="store_true",
+                      help="write the YC companies into SQLite (deliberate, manual)")
+
+
+def cmd_import_yc(args, fetch=None) -> int:
+    from . import database
+    from .adapters import yc_companies as yc
+    from .schema import SCHEMA_VERSION
+
+    fetch = fetch or yc.fetch_json
+    db_path = database.resolve_db_path(PROJECT_ROOT)
+    db_ready = db_path.is_file()
+    conn = None
+    try:
+        if args.apply:
+            if not db_ready:
+                print("[FAIL] Database not initialized; run: python -m discovery init-db")
+                return 1
+            conn = database.connect(db_path)
+            if database.get_schema_version(conn) != SCHEMA_VERSION:
+                print("[FAIL] Database schema is out of date; run: python -m discovery init-db")
+                return 1
+        elif db_ready:
+            conn = database.connect(db_path, readonly=True)
+
+        try:
+            snapshot = yc.fetch_snapshot(fetch)
+            analysis = yc.analyze(snapshot)
+        except yc.SourceError as exc:
+            print(f"[FAIL] YC source unusable: {exc}")
+            if args.apply:
+                yc.record_failed_fetch(conn, exc)
+                print("       The failed attempt was recorded; no company data was changed.")
+            return 1
+
+        existing = yc.existing_state(conn) if conn else {}
+        pv = yc.preview(analysis, existing)
+        print(("DRY RUN - nothing was changed" if args.dry_run else "APPLYING import") + " | source: yc-oss/api")
+        print(f"Source last updated (publisher): {snapshot.source_updated_at}")
+        print(f"Retrieved (this machine):        {snapshot.retrieved_at}")
+        print(f"Records fetched: {len(snapshot.records)} (meta.json says {snapshot.meta_count}) | "
+              f"importable: {len(analysis.companies)}")
+        print("India relevance: " + ", ".join(f"{k}={v}" for k, v in analysis.classes.items()))
+        print(f"Would publish to review sheet (india_based only): {analysis.publish_count}")
+        print(f"New companies: {pv['new']} | already imported: {pv['existing']} "
+              f"(changed at source: {pv['existing_changed']}; stored facts to refresh: {pv['would_refresh']})")
+        print(f"YC-reported hiring flag true: {analysis.hiring_reported} (informational; no company excluded)")
+        print(f"Malformed records: {len(analysis.malformed)} | identical duplicates dropped: "
+              f"{analysis.duplicates_dropped} | identity conflicts: {len(analysis.conflicts)}")
+        for line in (analysis.malformed + analysis.conflicts)[:10]:
+            print(f"  ! {line}")
+        for line in analysis.warnings[:10]:
+            print(f"  ? {line}")
+        if analysis.stale:
+            print("  ! Snapshot is older than 3 days.")
+        if args.dry_run:
+            return 0 if analysis.clean else 2
+        result = yc.import_companies(conn, snapshot, analysis)
+        print(f"Run {result.run_id}: {result.result} | created {result.created}, refreshed {result.refreshed}, "
+              f"unchanged {result.unchanged}")
+        return 0 if analysis.clean else 2
+    except yc.SourceError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+    finally:
+        if conn:
+            conn.close()
+
+
 # Register new subcommands here: name -> (help text, handler, optional argument configurer)
 COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
     "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
     "sync": ("Synchronize SQLite with the TEST Google Sheet", cmd_sync, _configure_sync),
+    "import-yc": ("Import Y Combinator companies (Stream B)", cmd_import_yc, _configure_import_yc),
 }
 
 
