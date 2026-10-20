@@ -565,6 +565,178 @@ def cmd_restricted_import(args, console=None, policy_path=None, db_path=None, ba
 
 
 # Register new subcommands here: name -> (help text, handler, optional argument configurer)
+def _configure_yc_jobs_collect(parser):
+    parser.add_argument("--authorized-by-operator", action="store_true", required=True,
+                        help="state that you hold YC's authorization for this automated retrieval (user-attested, "
+                             "recorded as such; no reference number)")
+    parser.add_argument("--classes", default="india_based",
+                        help="India relevance classes to check (default india_based); the hiring flag never filters")
+    parser.add_argument("--sample", type=int, help="check only a small representative sample of the selection")
+    parser.add_argument("--newest-first", action="store_true", help="check the most recently launched companies first")
+    parser.add_argument("--limit", type=int, help="check at most this many companies (after ordering and skipping)")
+    parser.add_argument("--skip-checked-in", action="append", metavar="SNAPSHOT", default=[],
+                        help="skip companies already requested in this saved snapshot (repeatable)")
+    parser.add_argument("--max-requests", type=int, default=None, help="hard request cap for this run")
+    parser.add_argument("--max-seconds", type=int, default=900, help="runtime cap in seconds")
+    parser.add_argument("--plan", action="store_true", help="show the selection and request volume only; send nothing")
+    parser.add_argument("--recent-days", type=int, default=90,
+                        help="listings younger than this are 'recently observed, unverified'; older ones are historical "
+                             "company-level evidence. A prioritization threshold only, never a closure rule")
+
+
+def cmd_yc_jobs_collect(args, fetch=None, sleep=None, db_path=None, snapshot_dir=None) -> int:
+    """Read-only collection of public YC job pages into a git-ignored snapshot. Writes nothing to SQLite or Sheets."""
+    import time as _time
+
+    from . import database
+    from .adapters import yc_jobs as yj
+    path_db = db_path or database.resolve_db_path(PROJECT_ROOT)
+    if not path_db.is_file():
+        print("[REFUSED] database not initialized; run: python -m discovery init-db")
+        return 1
+    conn = database.connect(path_db, readonly=True)
+    try:
+        classes = tuple(c.strip() for c in args.classes.split(",") if c.strip())
+        companies = yj.select_companies(conn, classes)
+    except yj.YCJobsError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    finally:
+        conn.close()
+    counts = yj.selection_counts(companies)
+    try:
+        skipped = [slug for snap_path in args.skip_checked_in for slug in yj.slugs_in_snapshot(snap_path)]
+    except yj.YCJobsError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    chosen = yj.plan_batch(companies, newest_first=args.newest_first, limit=args.limit, skip_slugs=skipped)
+    if args.sample:
+        chosen = yj.representative_sample(chosen, args.sample)
+    if skipped:
+        print(f"Skipping {len(set(skipped) & {c['slug'] for c in companies})} companies already checked in earlier snapshots.")
+    cap = min(args.max_requests or len(chosen), yj.MAX_REQUESTS_CEILING)
+    print(f"Selected {counts['selected']} YC companies by relevance class {list(classes)} "
+          f"(hiring flag true {counts['hiring_true']}, false {counts['hiring_false']}, unknown {counts['hiring_unknown']}); "
+          f"checking {len(chosen)}. Expected requests <= {min(cap, len(chosen))}, about "
+          f"{round(min(cap, len(chosen)) * (yj.MIN_DELAY_SECONDS + 1) / 60, 1)} minutes at one request every "
+          f"{yj.MIN_DELAY_SECONDS:.0f}s.")
+    print("Authorization basis: user-attested (no reference number); sequential, no retries, stops on 403/429.")
+    if args.plan:
+        print("PLAN ONLY: nothing was requested.")
+        return 0
+    snapshot = yj.collect(chosen, fetch=fetch or yj.fetch_page, sleep=sleep or _time.sleep,
+                          max_requests=cap, max_seconds=args.max_seconds, recency_days=max(1, args.recent_days))
+    path = yj.write_snapshot(snapshot, snapshot_dir)
+    print("\n".join(_render_yc_jobs_summary(yj.summarize(snapshot))))
+    print(f"\nSnapshot saved (temporary, git-ignored): {path}")
+    print("Nothing was written to SQLite, Google Sheets TEST or LIVE. Import needs a separate approval: "
+          "python -m discovery yc-jobs-import --snapshot <file> [--apply]")
+    return 0 if not snapshot["stopped"] else 2
+
+
+def _render_yc_jobs_summary(s):
+    st = s["by_state"]
+    lines = [f"Companies in snapshot: {s['companies_in_snapshot']} (hiring flag true {s['hiring_true']}, "
+             f"false {s['hiring_false']}, unknown {s['hiring_unknown']})",
+             f"Checked: {s['checked']} (with listings {st['checked_with_listings']}, no listings observed "
+             f"{st['checked_no_listings']}) | partial {st['partial']} | blocked {st['blocked']} | failed {st['failed']} | "
+             f"not checked {st['not_checked']}",
+             f"Listings observed: {s['jobs_retrieved']} in {s['companies_with_listings']} companies | unique "
+             f"{s['unique_jobs']} | evidence (recency threshold {s['recency_days']} days): recently observed, unverified "
+             f"{s['evidence'].get('recently_observed_unverified', 0)}, historical/stale {s['evidence'].get('historical_stale', 0)} "
+             f"(company-level evidence only), unknown age {s['evidence'].get('unknown', 0)}; companies with only historical "
+             f"listings {s['companies_only_historical']}",
+             f"Posting dates: ISO date {s['jobs_with_iso_posting_date']}, relative age text only "
+             f"{s['jobs_with_relative_age_only']} (older than ~1 year: {s['jobs_older_than_1y']}, age unknown "
+             f"{s['jobs_age_unknown']}) | direct employer apply URLs {s['direct_employer_apply_urls']} "
+             "(YC's apply link is a login gate and is never followed)",
+             f"Requests: {s['requests']} | runtime {s['seconds']} s" + (f" | STOPPED: {s['stopped']}" if s["stopped"] else ""),
+             "Observed listings are NOT verified-open roles; zero listings never means 'not hiring'."]
+    if "jobs_new_if_imported" in s:
+        lines.append(f"If imported: new job rows {s['jobs_new_if_imported']}, already known {s['jobs_existing']} "
+                     "(historical listings become company-level evidence, not job rows)")
+    for slug, flag, state, n, kind in s["contradictions"]:
+        lines.append(f"  contradiction: {slug} directory hiring={flag}, page {state} ({n} listings): {kind}")
+    for slug, state, err in s["failed_or_blocked"]:
+        lines.append(f"  {state}: {slug} - {err}")
+    for slug, state, why in s["incomplete"]:
+        lines.append(f"  incomplete ({state}): {slug} - {why}")
+    return lines
+
+
+def _configure_yc_jobs_report(parser):
+    parser.add_argument("--snapshot", required=True, nargs="+", help="one or more snapshot files written by yc-jobs-collect")
+    parser.add_argument("--csv", action="store_true", help="also write <snapshot>.listings.csv next to each snapshot (git-ignored)")
+
+
+def cmd_yc_jobs_report(args) -> int:
+    """Read-only coverage and freshness report over saved snapshots. Touches neither the network nor SQLite."""
+    from .adapters import yc_jobs as yj
+    try:
+        snaps = [yj.load_snapshot(p) for p in args.snapshot]
+    except yj.YCJobsError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    merged = {"companies": [c for s in snaps for c in s["companies"]], "requests": sum(s["requests"] for s in snaps),
+              "seconds": round(sum(s["seconds"] for s in snaps), 1), "stopped": next((s["stopped"] for s in snaps if s["stopped"]), None),
+              "params": snaps[0].get("params", {})}
+    print(f"Snapshots combined: {len(snaps)}")
+    print("\n".join(_render_yc_jobs_summary(yj.summarize(merged))))
+    if args.csv:
+        for path, snap in zip(args.snapshot, snaps):
+            out = yj.write_listings_csv(snap, str(path) + ".listings.csv")
+            print(f"Listings CSV (git-ignored): {out}")
+    return 0
+
+
+def _configure_yc_jobs_import(parser):
+    parser.add_argument("--snapshot", required=True, help="snapshot file written by yc-jobs-collect")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--dry-run", action="store_true", help="show what would change (default)")
+    group.add_argument("--apply", action="store_true", help="back up the database, then import (needs the operator's approval)")
+
+
+def cmd_yc_jobs_import(args, db_path=None, backup_dir=None) -> int:
+    from . import database
+    from .adapters import jobspy_source as js
+    from .adapters import yc_jobs as yj
+    from .schema import SCHEMA_VERSION
+    try:
+        snapshot = yj.load_snapshot(args.snapshot)
+    except yj.YCJobsError as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    path_db = db_path or database.resolve_db_path(PROJECT_ROOT)
+    if not path_db.is_file():
+        print("[REFUSED] database not initialized; run: python -m discovery init-db")
+        return 1
+    ro = database.connect(path_db, readonly=True)
+    try:
+        version = database.get_schema_version(ro)
+        print("\n".join(_render_yc_jobs_summary(yj.summarize(snapshot, ro))))
+    finally:
+        ro.close()
+    if not args.apply:
+        print("\nDRY RUN: nothing was written. Re-run with --apply only after the operator approves the import.")
+        return 0
+    if version != SCHEMA_VERSION:
+        print("[REFUSED] database schema is out of date; back it up and run init-db first")
+        return 1
+    backup = js.verified_backup(path_db, backup_dir, label="pre-yc-jobs-import")
+    print(f"Verified backup: {backup}")
+    conn = database.connect(path_db)
+    try:
+        counts = yj.import_snapshot(conn, snapshot)
+        fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+        quick = conn.execute("PRAGMA quick_check").fetchone()[0]
+    finally:
+        conn.close()
+    print(f"Imported run {counts.run_id}: companies {counts.companies}, jobs created {counts.jobs_created}, changed "
+          f"{counts.jobs_changed}, unchanged {counts.jobs_unchanged}, company errors {len(counts.company_errors)}; "
+          f"integrity {'ok' if quick == 'ok' and not fk else 'PROBLEM'}")
+    return 0 if counts.result == "success" else 2
+
+
 COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
     "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
@@ -575,6 +747,12 @@ COMMANDS = {
     "run": ("Run the requested sources and preview/apply the TEST sync (manual, one report)", cmd_run, _configure_run),
     "report": ("Show the consolidated report of a recorded discovery run", cmd_report, _configure_report),
     "restricted-policy": ("Show the restricted job-board policy (read-only)", cmd_restricted_policy, _configure_restricted_policy),
+    "yc-jobs-collect": ("Collect public YC company job pages into a snapshot (read-only; user-attested authorization)",
+                        cmd_yc_jobs_collect, _configure_yc_jobs_collect),
+    "yc-jobs-report": ("Read-only coverage/freshness report over saved yc_jobs snapshots (optional CSV)",
+                       cmd_yc_jobs_report, _configure_yc_jobs_report),
+    "yc-jobs-import": ("Import a yc_jobs snapshot after YOUR approval (dry-run by default; --apply backs up first)",
+                       cmd_yc_jobs_import, _configure_yc_jobs_import),
     "restricted-plan": ("Display a restricted-source plan and record it for chat approval (contacts nothing)",
                         cmd_restricted_plan, _configure_restricted_plan),
     "restricted-collect": ("Phase A: collect from restricted boards after YOUR interactive approval", cmd_restricted_collect,

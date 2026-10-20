@@ -116,6 +116,8 @@ def test_sighting_must_reference_exactly_one_record(conn):
 # 7
 def test_repeated_sighting_updates_last_seen_only(conn):
     _, job_id = make_job(conn)
+    # make_job stamps the real clock; pin it before the fixed dates below so the test does not depend on today's date
+    conn.execute("UPDATE jobs SET last_seen_at = '2026-10-01T00:00:00+00:00' WHERE job_id = ?", (job_id,))
     db.register_source(conn, "feed_a", "Feed A", "ats_feed")
     sid, created = db.record_sighting(conn, "feed_a", "https://a.example/1", job_id=job_id,
                                       external_id="A-1", now="2026-10-19T10:00:00+00:00")

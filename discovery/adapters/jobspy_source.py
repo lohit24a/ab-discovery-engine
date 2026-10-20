@@ -514,12 +514,12 @@ def _import_one(conn, rec, collected_at, hints, company_cache, counts, now):
     counts.already_seen += 0 if obs.created else 1
 
 
-def verified_backup(db_path, directory=None):
+def verified_backup(db_path, directory=None, label="pre-restricted-import"):
     """SQLite online backup before an import; raises if the copy fails its integrity check."""
     import sqlite3
     directory = Path(directory or db.PROJECT_ROOT / "backups")
     directory.mkdir(parents=True, exist_ok=True)
-    target = directory / f"discovery_pre-restricted-import_{time.strftime('%Y%m%d-%H%M%S')}.db"
+    target = directory / f"discovery_{label}_{time.strftime('%Y%m%d-%H%M%S')}.db"
     src, dst = sqlite3.connect(db_path), sqlite3.connect(target)
     try:
         src.backup(dst)

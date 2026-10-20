@@ -1,0 +1,81 @@
+{
+ "_note": "Sanitized from live responses observed 2026-10-20: only fields the adapter reads, no founder or user data.",
+ "razorpay": {
+  "props": {
+   "company": {
+    "id": 827,
+    "name": "Razorpay",
+    "slug": "razorpay"
+   },
+   "jobPostings": [
+    {
+     "id": 16046,
+     "title": "Senior/Principal Engineer/Manager, Frontend Engineering",
+     "url": "/companies/razorpay/jobs/Xpdifpfmk-senior-principal-engineer-manager-frontend-engineering",
+     "applyUrl": "https://account.ycombinator.com/authenticate?continue=https%3A%2F%2Fwww.workatastartup.com",
+     "location": "Bangalore, Karnataka",
+     "createdAt": "about 7 years",
+     "minExperience": "6+ years",
+     "type": "Full-time",
+     "role": "eng",
+     "roleSpecificType": "Frontend",
+     "visa": "US citizen/visa only",
+     "salaryRange": "",
+     "isIncomplete": false,
+     "lastActive": null
+    },
+    {
+     "id": 6516,
+     "title": "Senior Infrastructure Engineer",
+     "url": "/companies/razorpay/jobs/zUemCTA1N-senior-infrastructure-engineer",
+     "applyUrl": "https://account.ycombinator.com/authenticate?continue=https%3A%2F%2Fwww.workatastartup.com",
+     "location": "Bengaluru",
+     "createdAt": "over 8 years",
+     "minExperience": "6+ years",
+     "type": "Full-time",
+     "role": "eng",
+     "roleSpecificType": "Devops",
+     "visa": "US citizen/visa only",
+     "salaryRange": "",
+     "isIncomplete": false,
+     "lastActive": null
+    },
+    {
+     "id": 77,
+     "title": "Senior / Principal Engineers",
+     "url": "/companies/razorpay/jobs/GQiEGb6ug-senior-principal-engineers",
+     "applyUrl": "https://account.ycombinator.com/authenticate?continue=https%3A%2F%2Fwww.workatastartup.com",
+     "location": "bangalore",
+     "createdAt": "over 8 years",
+     "minExperience": "6+ years",
+     "type": "Full-time",
+     "role": "eng",
+     "roleSpecificType": "Full stack",
+     "visa": "Will sponsor",
+     "salaryRange": "",
+     "isIncomplete": false,
+     "lastActive": null
+    }
+   ],
+   "relatedJobs": null,
+   "signedIn": false,
+   "currentUser": null,
+   "showDirectApply": false,
+   "jobsUrl": "/companies/razorpay/jobs"
+  }
+ },
+ "cleartax": {
+  "props": {
+   "company": {
+    "id": 664,
+    "name": "Clear",
+    "slug": "cleartax"
+   },
+   "jobPostings": [],
+   "relatedJobs": null,
+   "signedIn": false,
+   "currentUser": null,
+   "jobsUrl": "/companies/cleartax/jobs"
+  }
+ }
+}
