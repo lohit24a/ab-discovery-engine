@@ -203,6 +203,81 @@ def test_blank_sheet_cell_never_erases_a_stored_verdict_or_notes(conn, world):
     assert report.verdicts_restored
 
 
+class TestNotesWithoutVerdict:
+    def test_note_with_blank_verdict_is_imported(self, conn, world):
+        backend = FakeBackend()
+        sync(conn, backend)
+        backend.set_cell("Companies", world["acme"], "Your Notes", "research funding first")
+        report = sync(conn, backend, now=T3)
+        v = db.get_verdict(conn, company_id=world["acme"])
+        assert v["decision"] is None and v["notes"] == "research funding first"
+        assert len(report.verdicts_imported) == 1 and not report.warnings
+
+    def test_verdict_chosen_later_keeps_the_note(self, conn, world):
+        backend = FakeBackend()
+        sync(conn, backend)
+        backend.set_cell("Posts", world["job1"], "Your Notes", "ask about visa")
+        sync(conn, backend, now=T2)
+        backend.set_cell("Posts", world["job1"], "Your Verdict", "Maybe")
+        sync(conn, backend, now=T3)
+        v = db.get_verdict(conn, job_id=world["job1"])
+        assert (v["decision"], v["notes"]) == ("Maybe", "ask about visa")
+        assert backend.cell("Posts", backend.row_of("Posts", world["job1"]), "Your Notes") == "ask about visa"
+
+    def test_repeat_sync_is_idempotent_and_blank_cell_restores_the_note(self, conn, world):
+        backend = FakeBackend()
+        sync(conn, backend)
+        backend.set_cell("Posts", world["job1"], "Your Notes", "keep this")
+        sync(conn, backend, now=T2)
+        n_writes = len(backend.writes())
+        before = snapshot(conn)
+        assert not sync(conn, backend, now=T3).verdicts_imported
+        assert len(backend.writes()) == n_writes
+        assert {k: v for k, v in snapshot(conn).items() if k != "runs"} == {k: v for k, v in before.items() if k != "runs"}
+        backend.set_cell("Posts", world["job1"], "Your Notes", "")  # accidental delete
+        report = sync(conn, backend, now="2026-10-22T10:00:00+00:00")
+        assert backend.cell("Posts", backend.row_of("Posts", world["job1"]), "Your Notes") == "keep this"
+        assert db.get_verdict(conn, job_id=world["job1"])["notes"] == "keep this"
+        assert any("notes restored" in r for r in report.verdicts_restored)
+
+    def test_note_only_row_survives_restart_and_row_deletion(self, conn, world):
+        backend = FakeBackend()
+        sync(conn, backend)
+        backend.set_cell("Posts", world["job2"], "Your Notes", "maybe later")
+        sync(conn, backend, now=T2)
+        path = conn.execute("PRAGMA database_list").fetchone()[2]
+        conn.close()
+        reopened = db.connect(path)
+        try:
+            assert db.get_verdict(reopened, job_id=world["job2"])["notes"] == "maybe later"
+            backend.tabs["Posts"] = [r for r in backend.tabs["Posts"] if r[0] != world["job2"]]
+            sync(reopened, backend, now=T3)
+            i = backend.row_of("Posts", world["job2"])
+            assert backend.cell("Posts", i, "Your Notes") == "maybe later"
+            assert backend.cell("Posts", i, "Your Verdict") == ""
+        finally:
+            reopened.close()
+
+    def test_conflicting_notes_are_reported_not_overwritten(self, conn, world):
+        backend = FakeBackend()
+        sync(conn, backend, now=T1)
+        backend.set_cell("Posts", world["job1"], "Your Notes", "first thought")
+        sync(conn, backend, now=T2)
+        db.save_verdict(conn, notes="database-side edit", job_id=world["job1"], now=T3)
+        backend.set_cell("Posts", world["job1"], "Your Notes", "different sheet edit")
+        report = sync(conn, backend, now="2026-10-22T10:00:00+00:00")
+        assert len(report.conflicts) == 1
+        assert db.get_verdict(conn, job_id=world["job1"])["notes"] == "database-side edit"
+        assert backend.cell("Posts", backend.row_of("Posts", world["job1"]), "Your Notes") == "different sheet edit"
+
+    def test_whitespace_only_note_is_not_stored(self, conn, world):
+        backend = FakeBackend()
+        sync(conn, backend)
+        backend.set_cell("Posts", world["job1"], "Your Notes", "   ")
+        sync(conn, backend, now=T3)
+        assert db.get_verdict(conn, job_id=world["job1"]) is None
+
+
 def test_invalid_verdict_text_is_ignored_with_warning(conn, world):
     backend = FakeBackend()
     sync(conn, backend)

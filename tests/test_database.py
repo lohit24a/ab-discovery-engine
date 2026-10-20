@@ -247,6 +247,65 @@ def test_readonly_connection_cannot_write(db_path):
         ro.close()
 
 
+# --- notes without a verdict (schema v3) ---------------------------------
+
+def test_note_without_verdict_is_stored_then_verdict_keeps_the_note(conn):
+    _, job_id = make_job(conn)
+    db.save_verdict(conn, None, "call founder first", job_id=job_id, now="2026-10-19T10:00:00+00:00")
+    v = db.get_verdict(conn, job_id=job_id)
+    assert v["decision"] is None and v["notes"] == "call founder first"
+    db.save_verdict(conn, "Yes", job_id=job_id)  # notes left out -> kept
+    v = db.get_verdict(conn, job_id=job_id)
+    assert (v["decision"], v["notes"]) == ("Yes", "call founder first")
+    db.save_verdict(conn, notes="updated note", job_id=job_id)  # decision left out -> kept
+    v = db.get_verdict(conn, job_id=job_id)
+    assert (v["decision"], v["notes"]) == ("Yes", "updated note")
+    assert count(conn, "verdicts") == 1
+
+
+def test_unchanged_save_does_not_touch_updated_at(conn):
+    _, job_id = make_job(conn)
+    db.save_verdict(conn, "No", "n", job_id=job_id, now="2026-10-19T10:00:00+00:00")
+    db.save_verdict(conn, "No", "n", job_id=job_id, now="2026-10-25T10:00:00+00:00")
+    assert db.get_verdict(conn, job_id=job_id)["updated_at"] == "2026-10-19T10:00:00+00:00"
+
+
+def test_explicit_clearing_is_possible_but_never_leaves_an_empty_row(conn):
+    _, job_id = make_job(conn)
+    db.save_verdict(conn, "Maybe", "keep me", job_id=job_id)
+    db.save_verdict(conn, None, job_id=job_id)             # clear verdict, note remains
+    assert db.get_verdict(conn, job_id=job_id)["decision"] is None
+    with pytest.raises(sqlite3.IntegrityError):            # nothing left to store
+        db.save_verdict(conn, None, "", job_id=job_id)
+    assert db.get_verdict(conn, job_id=job_id)["notes"] == "keep me"
+    with pytest.raises(sqlite3.IntegrityError):            # a brand-new empty row is refused too
+        db.save_verdict(conn, None, "   ", company_id=make_job(conn, domain="other.example")[0])
+
+
+def test_v3_migration_preserves_existing_verdicts(tmp_path):
+    from discovery.schema import MIGRATIONS
+    path = tmp_path / "v2.db"
+    raw = sqlite3.connect(path)
+    for m in MIGRATIONS[:2]:
+        raw.executescript(m)
+    raw.execute("INSERT INTO companies (company_id, name, normalized_name, identity_status, created_at, updated_at)"
+                " VALUES ('c1', 'Old Co', 'old co', 'provisional', 't', 't')")
+    raw.execute("INSERT INTO verdicts (verdict_id, company_id, decision, notes, created_at, updated_at)"
+                " VALUES ('v1', 'c1', 'No', 'old note', 'c', 'u')")
+    raw.commit()
+    raw.close()
+    assert db.initialize_database(path) == SCHEMA_VERSION
+    c = db.connect(path)
+    try:
+        v = db.get_verdict(c, company_id="c1")
+        assert (v["verdict_id"], v["decision"], v["notes"], v["created_at"], v["updated_at"]) == \
+            ("v1", "No", "old note", "c", "u")
+        db.save_verdict(c, None, "note only", company_id="c1")  # NULL decision now allowed
+        assert "ux_verdicts_company" in [r[1] for r in c.execute("PRAGMA index_list(verdicts)")]
+    finally:
+        c.close()
+
+
 # --- doctor and configuration -------------------------------------------
 
 def project_with_db(tmp_path):

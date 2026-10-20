@@ -15,8 +15,14 @@ in the few milliseconds between the final ID re-check and the batch write could 
 Cells are addressed by row position inside one write, so such an edit could land on the wrong row;
 the re-check makes this unlikely, not impossible. Do not edit the sheet while a sync is running.
 
-Known limitation: SQLite stores a note only together with a verdict (verdicts.decision is required),
-so a note typed against a row with no verdict stays in the sheet, untouched, until a verdict is set.
+Notes without a verdict: a note typed against a row whose verdict is blank is imported (decision
+stays NULL = unreviewed). Later choosing Yes/Maybe/No keeps the note.
+
+Clearing: a blank cell never clears anything - the stored verdict/note is restored into it. To change
+a verdict, type another of Yes/Maybe/No; to change a note, type new text. Deliberately clearing a
+verdict or note from the sheet is NOT supported yet (deferred). From Python it is explicit:
+save_verdict(conn, None, job_id=...) clears the verdict (a note must remain) and
+save_verdict(conn, notes="", job_id=...) clears the note (a verdict must remain).
 """
 
 import json
@@ -333,27 +339,24 @@ def reconcile_human(label, sheet_verdict_raw, sheet_notes_raw, stored, last_sync
         report.warnings.append(f"{label}: '{sheet_verdict_raw.strip()}' is not Yes/Maybe/No; ignored, left as is")
         return None, {}, False
     sn = sheet_notes_raw or ""
-    dbd = stored["decision"] if stored else ""
+    dbd = (stored["decision"] or "") if stored else ""
     dbn = stored["notes"] if stored else ""
     changed_since_sync = bool(stored) and (last_sync is None or stored["updated_at"] > last_sync)
     restore = {}
 
-    if sv == "" and not dbd:
-        if sn.strip():
-            report.warnings.append(f"{label}: has a note but no verdict; the note stays in the sheet only "
-                                   "until a verdict is chosen")
-        return None, restore, True
+    # A blank cell never replaces a stored value: the stored value is put back instead.
     if sv == "":
         sv_effective = dbd
-        restore[VERDICT_COLUMN] = dbd  # never let a blank replace a stored verdict
-        report.verdicts_restored.append(f"{label}: verdict '{dbd}' restored")
+        if dbd:
+            restore[VERDICT_COLUMN] = dbd
+            report.verdicts_restored.append(f"{label}: verdict '{dbd}' restored")
     else:
         sv_effective = sv
-
-    if not sn.strip() and dbn.strip():
-        restore[NOTES_COLUMN] = dbn
-        report.verdicts_restored.append(f"{label}: notes restored")
-        notes_effective = dbn
+    if not sn.strip():
+        notes_effective = dbn if dbn.strip() else ""
+        if dbn.strip():
+            restore[NOTES_COLUMN] = dbn
+            report.verdicts_restored.append(f"{label}: notes restored")
     else:
         notes_effective = sn
 
@@ -361,13 +364,16 @@ def reconcile_human(label, sheet_verdict_raw, sheet_notes_raw, stored, last_sync
     notes_differ = bool(dbn.strip()) and bool(notes_effective.strip()) and notes_effective.strip() != dbn.strip()
     if (verdict_differs or notes_differ) and changed_since_sync:
         report.conflicts.append(
-            f"{label}: sheet says '{sv_effective}' / notes differ, database says '{dbd}'; the database value "
-            "was changed since the last successful sync. Neither side was changed - make them agree, then re-sync")
-        return None, {k: v for k, v in restore.items()}, True
-    if not dbd or verdict_differs or (notes_effective.strip() != dbn.strip()):
+            f"{label}: sheet says '{sv_effective or '(unreviewed)'}' / '{notes_effective.strip()[:40]}', database "
+            f"says '{dbd or '(unreviewed)'}' / '{dbn.strip()[:40]}'; the database value was changed since the "
+            "last successful sync. Neither side was changed - make them agree, then re-sync")
+        return None, restore, True
+    notes_changed = notes_effective.strip() != dbn.strip()
+    if (sv_effective != dbd or notes_changed) and (sv_effective or notes_effective.strip()):
         report.verdicts_imported.append(
-            f"{label}: {dbd or '(none)'} -> {sv_effective}" + (" (notes updated)" if notes_effective.strip() != dbn.strip() else ""))
-        return (sv_effective, notes_effective), restore, True
+            f"{label}: {dbd or '(unreviewed)'} -> {sv_effective or '(unreviewed)'}"
+            + (" (notes updated)" if notes_changed else ""))
+        return (sv_effective or None, notes_effective), restore, True
     return None, restore, True
 
 
@@ -490,7 +496,7 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
                     imports[tab].append((rid, *imp))
                 restores[tab][rid] = {"row": row_num, "cells": restore}
             elif verdict_row:
-                restores[tab][rid] = {"row": None, "cells": {VERDICT_COLUMN: verdict_row["decision"],
+                restores[tab][rid] = {"row": None, "cells": {VERDICT_COLUMN: verdict_row["decision"] or "",
                                                               NOTES_COLUMN: verdict_row["notes"]}}
                 report.verdicts_restored.append(
                     f"{'Job' if tab == 'Posts' else 'Company'} [{rid[:8]}]: row was missing; re-added with stored verdict")

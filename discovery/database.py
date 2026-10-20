@@ -448,20 +448,34 @@ def append_status_event(conn, new_state, reason, *, job_id=None, company_id=None
 
 # ------------------------------------------------------------------ verdicts
 
-def save_verdict(conn, decision, notes="", *, job_id=None, company_id=None, now=None):
-    """Save the human verdict for one job or company (one verdict per record)."""
+_UNSET = object()
+
+
+def save_verdict(conn, decision=_UNSET, notes=_UNSET, *, job_id=None, company_id=None, now=None):
+    """Save the human verdict and/or note for one job or company (one row per record).
+
+    decision: 'Yes' / 'Maybe' / 'No', or None for "not reviewed yet" (a note-only entry).
+    Anything left out keeps its stored value, so setting a verdict never drops the note and
+    editing a note never drops the verdict. Passing decision=None or notes="" is the explicit
+    way to clear one of them; the database refuses to leave a row with neither.
+    A save that changes nothing does not touch updated_at.
+    """
     now = now or utc_now()
     with transaction(conn):
         existing = get_verdict(conn, job_id=job_id, company_id=company_id)
         if existing:
-            conn.execute("UPDATE verdicts SET decision = ?, notes = ?, updated_at = ? WHERE verdict_id = ?",
-                         (decision, notes, now, existing["verdict_id"]))
+            new_decision = existing["decision"] if decision is _UNSET else decision
+            new_notes = existing["notes"] if notes is _UNSET else notes
+            if (new_decision, new_notes) != (existing["decision"], existing["notes"]):
+                conn.execute("UPDATE verdicts SET decision = ?, notes = ?, updated_at = ? WHERE verdict_id = ?",
+                             (new_decision, new_notes, now, existing["verdict_id"]))
             return existing["verdict_id"]
         verdict_id = new_id()
         conn.execute(
             """INSERT INTO verdicts (verdict_id, job_id, company_id, decision, notes, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (verdict_id, job_id, company_id, decision, notes, now, now))
+            (verdict_id, job_id, company_id, None if decision is _UNSET else decision,
+             "" if notes is _UNSET else notes, now, now))
         return verdict_id
 
 

@@ -188,5 +188,33 @@ PRAGMA user_version = 2;
 COMMIT;
 """
 
-MIGRATIONS = [MIGRATION_1, MIGRATION_2]
+# v3: allow a note without a verdict (decision NULL = not yet reviewed). SQLite cannot relax a
+# column constraint in place, so verdicts is rebuilt; nothing references it, and all rows are copied.
+# A row must still carry something: a verdict, a non-blank note, or both.
+MIGRATION_3 = """
+BEGIN;
+
+CREATE TABLE verdicts_new (
+    verdict_id  TEXT PRIMARY KEY,
+    job_id      TEXT REFERENCES jobs(job_id) ON DELETE RESTRICT,
+    company_id  TEXT REFERENCES companies(company_id) ON DELETE RESTRICT,
+    decision    TEXT CHECK (decision IS NULL OR decision IN ('Yes', 'Maybe', 'No')),
+    notes       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    CHECK ((job_id IS NULL) != (company_id IS NULL)),
+    CHECK (decision IS NOT NULL OR length(trim(notes)) > 0)
+);
+INSERT INTO verdicts_new (verdict_id, job_id, company_id, decision, notes, created_at, updated_at)
+    SELECT verdict_id, job_id, company_id, decision, notes, created_at, updated_at FROM verdicts;
+DROP TABLE verdicts;
+ALTER TABLE verdicts_new RENAME TO verdicts;
+CREATE UNIQUE INDEX ux_verdicts_job ON verdicts(job_id) WHERE job_id IS NOT NULL;
+CREATE UNIQUE INDEX ux_verdicts_company ON verdicts(company_id) WHERE company_id IS NOT NULL;
+
+PRAGMA user_version = 3;
+COMMIT;
+"""
+
+MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3]
 SCHEMA_VERSION = len(MIGRATIONS)

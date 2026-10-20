@@ -429,7 +429,8 @@ def test_upgrade_from_version_1_preserves_data(tmp_path):
                    VALUES ('c1', 'Old Co', 'old co', 'provisional', 't', 't')""")
     raw.commit()
     raw.close()
-    assert db.initialize_database(path) == 2
+    from discovery.schema import SCHEMA_VERSION
+    assert db.initialize_database(path) == SCHEMA_VERSION
     conn = db.connect(path)
     try:
         assert db.get_company(conn, "c1")["name"] == "Old Co"
