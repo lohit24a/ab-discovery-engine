@@ -154,19 +154,55 @@ def cmd_init_db(args) -> int:
     return 0
 
 
-# Register new subcommands here: name -> (help text, handler)
+def _configure_sync(parser):
+    # Only TEST is accepted. LIVE needs a separate, explicit authorization in a later step.
+    parser.add_argument("--target", choices=["test"], required=True,
+                        help="spreadsheet to synchronize (only 'test' is enabled)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="report intended changes without modifying SQLite or the spreadsheet")
+
+
+def cmd_sync(args) -> int:
+    from . import database, sheets_sync
+    from .schema import SCHEMA_VERSION
+
+    try:
+        db_path = database.resolve_db_path(PROJECT_ROOT)
+        if not db_path.is_file():
+            print("[FAIL] Database not initialized; run: python -m discovery init-db")
+            return 1
+        backend = sheets_sync.open_backend(args.target, PROJECT_ROOT)
+        conn = database.connect(db_path, readonly=args.dry_run)
+        try:
+            if database.get_schema_version(conn) != SCHEMA_VERSION:
+                print("[FAIL] Database schema is out of date; run: python -m discovery init-db")
+                return 1
+            report = sheets_sync.sync_to_sheets(conn, backend, dry_run=args.dry_run)
+        finally:
+            conn.close()
+    except (sheets_sync.SyncError, database.DatabaseConfigError) as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+    print("\n".join(report.lines()))
+    return 2 if report.conflicts else 0
+
+
+# Register new subcommands here: name -> (help text, handler, optional argument configurer)
 COMMANDS = {
-    "doctor": ("Run local project health checks (read-only)", cmd_doctor),
-    "init-db": ("Create or upgrade the local SQLite database", cmd_init_db),
+    "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
+    "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
+    "sync": ("Synchronize SQLite with the TEST Google Sheet", cmd_sync, _configure_sync),
 }
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="discovery", description="A+B Discovery Engine")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
-    for name, (help_text, handler) in COMMANDS.items():
+    for name, (help_text, handler, configure) in COMMANDS.items():
         p = sub.add_parser(name, help=help_text)
         p.set_defaults(handler=handler)
+        if configure:
+            configure(p)
     return parser
 
 
