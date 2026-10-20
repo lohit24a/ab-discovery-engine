@@ -378,6 +378,43 @@ def _import_one(conn, rec, snapshot, result, now):
         result.unchanged += 1
 
 
+@dataclass
+class YCReport:
+    apply: bool
+    status: str = "ok"          # ok | failed
+    error: str = ""
+    snapshot: Snapshot = None
+    analysis: Analysis = None
+    preview: dict = field(default_factory=dict)
+    result: ImportResult = None
+    run_id: str = ""
+
+
+def execute(conn, *, apply, fetch=fetch_json, now=None) -> YCReport:
+    """Fetch, analyse and (with apply=True) import the YC snapshot. Records a failed attempt on source errors.
+
+    conn may be None for a dry run without a database, or a read-only connection for a dry run.
+    """
+    report = YCReport(apply=apply)
+    try:
+        report.snapshot = fetch_snapshot(fetch)
+        report.analysis = analyze(report.snapshot)
+    except SourceError as exc:
+        report.status, report.error = "failed", str(exc)
+        if apply and conn is not None:
+            report.run_id = record_failed_fetch(conn, exc, now=now)
+        return report
+    report.preview = preview(report.analysis, existing_state(conn) if conn is not None else {})
+    if apply:
+        try:
+            report.result = import_companies(conn, report.snapshot, report.analysis, now=now)
+            report.run_id = report.result.run_id
+        except SourceError as exc:
+            report.status, report.error = "failed", str(exc)
+            report.run_id = record_failed_fetch(conn, exc, now=now)
+    return report
+
+
 def record_failed_fetch(conn, error, *, now=None):
     """Remember that a YC import attempt failed. Touches no company data."""
     now = now or db.utc_now()

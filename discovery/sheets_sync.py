@@ -332,7 +332,8 @@ def load_run_rows(conn):
         checks.setdefault(r["run_id"], []).append(r)
     out = {}
     # Sync runs are bookkeeping, not discovery executions, so they are not listed in the Runs tab.
-    for r in conn.execute("SELECT * FROM runs WHERE run_type != 'sync' ORDER BY started_at, run_id"):
+    # A run still in progress (for example the discovery run that is syncing right now) is listed once it has finished.
+    for r in conn.execute("SELECT * FROM runs WHERE run_type != 'sync' AND result != 'running' ORDER BY started_at, run_id"):
         cs = checks.get(r["run_id"], [])
         errors = [r["error_detail"]] if r["error_detail"] else []
         errors += [f"{c['scope'] or c['source_id']}: {c['error_info']}" for c in cs if c["error_info"]]

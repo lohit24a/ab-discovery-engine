@@ -216,18 +216,13 @@ def cmd_import_yc(args, fetch=None) -> int:
         elif db_ready:
             conn = database.connect(db_path, readonly=True)
 
-        try:
-            snapshot = yc.fetch_snapshot(fetch)
-            analysis = yc.analyze(snapshot)
-        except yc.SourceError as exc:
-            print(f"[FAIL] YC source unusable: {exc}")
+        report = yc.execute(conn, apply=args.apply, fetch=fetch)
+        if report.status == "failed":
+            print(f"[FAIL] YC source unusable: {report.error}")
             if args.apply:
-                yc.record_failed_fetch(conn, exc)
                 print("       The failed attempt was recorded; no company data was changed.")
             return 1
-
-        existing = yc.existing_state(conn) if conn else {}
-        pv = yc.preview(analysis, existing)
+        snapshot, analysis, pv = report.snapshot, report.analysis, report.preview
         print(("DRY RUN - nothing was changed" if args.dry_run else "APPLYING import") + " | source: yc-oss/api")
         print(f"Source last updated (publisher): {snapshot.source_updated_at}")
         print(f"Retrieved (this machine):        {snapshot.retrieved_at}")
@@ -248,7 +243,7 @@ def cmd_import_yc(args, fetch=None) -> int:
             print("  ! Snapshot is older than 3 days.")
         if args.dry_run:
             return 0 if analysis.clean else 2
-        result = yc.import_companies(conn, snapshot, analysis)
+        result = report.result
         print(f"Run {result.run_id}: {result.result} | created {result.created}, refreshed {result.refreshed}, "
               f"unchanged {result.unchanged}")
         return 0 if analysis.clean else 2
@@ -292,6 +287,68 @@ def cmd_import_feashliaa(args, fetch=None, cache_dir=None) -> int:
             conn.close()
 
 
+def _configure_run(parser):
+    parser.add_argument("--sources", required=True,
+                        help="comma-separated sources to run, e.g. yc,feashliaa (nothing runs unless named)")
+    parser.add_argument("--target", choices=["test"], required=True,
+                        help="spreadsheet to preview/sync (only 'test' is enabled; LIVE is not authorized)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="fetch and analyse everything; change neither SQLite nor the spreadsheet")
+    parser.add_argument("--apply-sync", action="store_true",
+                        help="also apply the TEST spreadsheet sync (default: only preview it)")
+    parser.add_argument("--resume", metavar="RUN_ID",
+                        help="re-run an interrupted/failed run: sources already finished under it are not repeated")
+
+
+def cmd_run(args, fetchers=None, backend_factory=None, cache_dir=None, prefilter=None) -> int:
+    from . import database, pipeline
+    from .adapters import feashliaa as fz, yc_companies as yc
+
+    db_path = database.resolve_db_path(PROJECT_ROOT)
+    if not db_path.is_file():
+        print("[FAIL] Database not initialized; run: python -m discovery init-db")
+        return 1
+    conn = database.connect(db_path, readonly=args.dry_run)
+    try:
+        sources = pipeline.parse_sources(args.sources)
+        result = pipeline.run_pipeline(
+            conn, sources=sources, target=args.target, dry_run=args.dry_run, apply_sync=args.apply_sync,
+            fetchers=fetchers, backend_factory=backend_factory, cache_dir=cache_dir, prefilter=prefilter,
+            resume_run_id=args.resume)
+    except (pipeline.PipelineError, yc.SourceError, fz.SourceError) as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+    finally:
+        conn.close()
+    print(pipeline.render(result.to_summary()))
+    return {"success": 0, "dry-run": 0, "partial": 2, "failed": 1}[result.overall]
+
+
+def _configure_report(parser):
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--last", action="store_true", help="show the most recent recorded discovery run")
+    which.add_argument("--run-id", help="show a specific discovery run")
+
+
+def cmd_report(args) -> int:
+    from . import database, pipeline
+
+    db_path = database.resolve_db_path(PROJECT_ROOT)
+    if not db_path.is_file():
+        print("[FAIL] Database not initialized; run: python -m discovery init-db")
+        return 1
+    conn = database.connect(db_path, readonly=True)
+    try:
+        summary = pipeline.load_summary(conn, None if args.last else args.run_id)
+    finally:
+        conn.close()
+    if summary is None:
+        print("No discovery run recorded yet. Start one with: python -m discovery run --sources yc,feashliaa --target test")
+        return 1
+    print(pipeline.render(summary))
+    return 0
+
+
 # Register new subcommands here: name -> (help text, handler, optional argument configurer)
 COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
@@ -300,6 +357,8 @@ COMMANDS = {
     "import-yc": ("Import Y Combinator companies (Stream B)", cmd_import_yc, _configure_import_yc),
     "import-feashliaa": ("Import filtered jobs from the Feashliaa feed (Stream A)", cmd_import_feashliaa,
                          _configure_import_yc),
+    "run": ("Run the requested sources and preview/apply the TEST sync (manual, one report)", cmd_run, _configure_run),
+    "report": ("Show the consolidated report of a recorded discovery run", cmd_report, _configure_report),
 }
 
 

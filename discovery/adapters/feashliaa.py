@@ -525,7 +525,7 @@ def execute(conn, *, apply, cache_dir, fetch=fetch_bytes, base_url=DEFAULT_BASE_
     except SourceError as exc:
         report.status, report.reasons = "failed", [str(exc)]
         if apply and conn is not None:
-            record_failure(conn, exc, now=now)
+            report.run_id = record_failure(conn, exc, now=now)
         return report
     report.manifest = manifest
     generated = parse_iso(manifest.generated_at)
@@ -544,12 +544,12 @@ def execute(conn, *, apply, cache_dir, fetch=fetch_bytes, base_url=DEFAULT_BASE_
         if newest and parse_iso(newest) > generated:
             report.status, report.reasons = "refused", [f"snapshot is older than data already imported ({newest})"]
             if apply:
-                record_failure(conn, report.reasons[0], outcome="partial", now=now)
+                report.run_id = record_failure(conn, report.reasons[0], outcome="partial", now=now)
             return report
     if now_dt and now_dt - generated > STALE_AFTER:
         report.status, report.reasons = "refused", [f"stale snapshot published {manifest.generated_at}"]
         if apply and conn is not None:
-            record_failure(conn, report.reasons[0], outcome="partial", now=now)
+            report.run_id = record_failure(conn, report.reasons[0], outcome="partial", now=now)
         return report
 
     store = SnapshotStore(manifest, cache_dir, fetch, base_url, **fetch_kw)
@@ -568,7 +568,7 @@ def execute(conn, *, apply, cache_dir, fetch=fetch_bytes, base_url=DEFAULT_BASE_
     if problems:
         report.status, report.reasons = "refused", problems[:3]
         if apply and conn is not None:
-            record_failure(conn, "; ".join(problems)[:300], outcome="partial", now=now)
+            report.run_id = record_failure(conn, "; ".join(problems)[:300], outcome="partial", now=now)
         return report
 
     if conn is not None:
@@ -599,7 +599,8 @@ def execute(conn, *, apply, cache_dir, fetch=fetch_bytes, base_url=DEFAULT_BASE_
         db.finish_run(conn, run_id, "success", now=db.utc_now(), summary={
             "snapshot_id": manifest.snapshot_id, "snapshot_at": manifest.generated_at, "scanned": metrics.scanned,
             "kept": metrics.kept, "companies_created": c.companies_created, "jobs_created": c.jobs_created,
-            "jobs_changed": c.jobs_changed, "marked_unknown": c.marked_unknown, "malformed": metrics.malformed,
+            "jobs_changed": c.jobs_changed, "jobs_unchanged": c.jobs_unchanged, "marked_unknown": c.marked_unknown,
+            "freshness_kept": metrics.freshness, "malformed": metrics.malformed,
             "runtime_s": round(metrics.seconds), "peak_mb": round(metrics.peak_mb)})
     except BaseException as exc:
         db.finish_run(conn, run_id, "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
