@@ -122,12 +122,32 @@ def missing_evidence(c, loc, exp, has_posting_date):
 
 # ---------------------------------------------------------------------------------- jobs
 
+def effective_verdict(verdict):
+    """-> (decision that acts on ranking and selection, legacy decision shown as history only).
+
+    LIVE is the authoritative review interface. A stored Yes/Maybe whose origin is 'legacy' (entered in the TEST sheet before LIVE)
+    is history: it earns no points and does not mark the record as reviewed. A stored No keeps suppressing whatever its origin
+    (conservative) until the person decides otherwise in LIVE. A verdict without an origin (a value read from the sheet in this sync,
+    or a hand-built candidate) acts normally."""
+    if not verdict or not verdict.get("decision"):
+        return None, None
+    decision = verdict["decision"]
+    if verdict.get("origin") == "legacy" and decision in ("Yes", "Maybe"):
+        return None, decision
+    return decision, None
+
+
+def _legacy_text(decision):
+    return f"an earlier TEST-sheet review said {decision} (history only, not counted: decisions count when you enter them in LIVE)"
+
+
 def score_job(c, profile, ranking, as_of):
     """c: candidate dict (see candidates.load_candidates). Returns a result dict; never mutates c."""
     W = ranking["jobs"]
     hx = profile.raw["hard_exclusions"]
     ex = profile.raw["experience"]
     verdict = c.get("verdict")
+    decision, legacy = effective_verdict(verdict)
     loc = classify_location(c["locations"], profile)
     ctext = c.get("company_text") or ""
     role = match_roles(c["title"], profile, ctext, c.get("description", ""))
@@ -136,7 +156,7 @@ def score_job(c, profile, ranking, as_of):
     screen = screen_title(c["title"], profile) if not role.has_signal else None
     when, date_codes = posting_date(c, ranking)
     excl = []
-    if hx["human_verdict_no"] and verdict and verdict.get("decision") == "No" and profile.raw["verdicts"]["suppress_rejected"]:
+    if hx["human_verdict_no"] and decision == "No" and profile.raw["verdicts"]["suppress_rejected"]:
         excl.append("HUMAN_NO")
     if hx["closed_or_not_seen"] and c.get("state") in ("Closed", "Not Seen"):
         excl.append("CLOSED_OR_NOT_SEEN")
@@ -154,13 +174,14 @@ def score_job(c, profile, ranking, as_of):
             "locations": [s for s, _ in loc.segments], "location_evidence": c.get("location_evidence", []),
             "availability": c.get("availability", "unknown"), "family": role.best.family if role.best else None,
             "role_strength": role.best.strength if role.best else None, "experience": exp.category, "hints": list(c.get("hints", [])),
-            "sources": list(c.get("source_ids", [])), "employer_key": name_key(c["company_name"]), "verdict": (verdict or {}).get("decision"),
+            "sources": list(c.get("source_ids", [])), "employer_key": name_key(c["company_name"]), "verdict": decision, "verdict_legacy": legacy,
             "missing_evidence": missing, "local_first_seen": c.get("local_first_seen"), "last_seen": c.get("last_seen"),
             "state": c.get("state"), "merged_records": c.get("merged_records", 0), "user_supplied": bool(c.get("user_supplied")), "link": c.get("link") or c.get("url") or "", "posting_date": when.isoformat() if when else None,
             "families": [h.family for h in role.hits]}
     if excl:
         reason = next(r for r in EXCLUSION_ORDER if r in excl)
-        text = {"HUMAN_NO": "a stored human verdict is No", "CLOSED_OR_NOT_SEEN": f"the lifecycle already says {c.get('state')}",
+        text = {"HUMAN_NO": "a stored human verdict is No" + (" (entered in the TEST sheet; it stays in force until you decide otherwise in LIVE)"
+                                                               if (verdict or {}).get("origin") == "legacy" else ""), "CLOSED_OR_NOT_SEEN": f"the lifecycle already says {c.get('state')}",
                 "PLACEHOLDER_COMPANY": "the company label is a source placeholder", "EXECUTIVE_TITLE": "executive-level title (excluded by the profile)",
                 "LOCATION_INCOMPATIBLE": "every documented location is outside India (" + "; ".join(s for s, _ in loc.segments[:3]) + ")",
                 "NON_TARGET_ROLE": "the title names a different kind of job (" + ", ".join(screen.terms[:2] if screen else []) + ") and matches none of the eight role families"}[reason]
@@ -343,14 +364,17 @@ def score_job(c, profile, ranking, as_of):
         codes.append("CO_ALSO_STREAM_B")
 
     V = W["verdict"]
-    if verdict and verdict.get("decision") == "Yes":
+    if decision == "Yes":
         comp["verdict"] = V["yes"]
         codes.append("VERDICT_YES")
         facts.insert(0, f"your stored verdict is Yes (+{V['yes']} points)")      # first, so a long explanation never hides it
-    elif verdict and verdict.get("decision") == "Maybe":
+    elif decision == "Maybe":
         comp["verdict"] = V["maybe"]
         codes.append("VERDICT_MAYBE")
         facts.insert(0, f"your stored verdict is Maybe (+{V['maybe']} points)")
+    elif legacy:
+        codes.append("VERDICT_LEGACY_TEST")
+        facts.insert(0, _legacy_text(legacy))
     if c.get("hints"):
         codes.append("HINT_UNRESOLVED_IDENTITY")
     if c.get("merged_records"):
@@ -387,11 +411,12 @@ def score_company(c, profile, ranking):
     hx = profile.raw["hard_exclusions"]
     ev = c["evidence"]
     verdict = c.get("verdict")
+    decision, legacy = effective_verdict(verdict)
     base = {"kind": "company", "id": c["company_id"], "company": c["name"], "employer_key": name_key(c["name"]), "hints": list(c.get("hints", [])),
-            "verdict": (verdict or {}).get("decision"), "n_jobs": c.get("n_jobs", 0), "local_first_seen": c.get("first_seen"), "sources": sorted(c.get("sources", [])),
+            "verdict": decision, "verdict_legacy": legacy, "n_jobs": c.get("n_jobs", 0), "local_first_seen": c.get("first_seen"), "sources": sorted(c.get("sources", [])),
             "missing_evidence": ["FUNDING_NOT_RECORDED", "OPERATING_STATUS_" + ("SOURCE_REPORTED" if ev.get("yc_status") else "UNKNOWN"),
                                  "FACTS_ARE_SOURCE_REPORTED"]}
-    if hx["human_verdict_no"] and verdict and verdict.get("decision") == "No" and profile.raw["verdicts"]["suppress_rejected"]:
+    if hx["human_verdict_no"] and decision == "No" and profile.raw["verdicts"]["suppress_rejected"]:
         return {**base, "classification": "excluded", "score": None, "hard_exclusion": "HUMAN_NO", "components": {}, "reason_codes": ["EXCLUDED_HUMAN_NO"],
                 "review_reasons": [], "explanation": "Excluded (HUMAN_NO): a stored human verdict is No. The record is kept in SQLite and not suggested."}
     if hx["placeholder_company_label"] and is_placeholder_name(c["name"]):
@@ -479,14 +504,17 @@ def score_company(c, profile, ranking):
     comp["jobs_presence"] = min(J["observed_job_cap"], J["observed_job_listing"] * n) if n else J["no_jobs"]
     facts.append(f"{n} observed job listing(s) (not verified open)" if n else "no job listings observed (not a penalty)")
     V = W["verdict"]
-    if verdict and verdict.get("decision") == "Yes":
+    if decision == "Yes":
         comp["verdict"] = V["yes"]
         codes.append("VERDICT_YES")
         facts.insert(0, f"your stored verdict is Yes (+{V['yes']} points)")
-    elif verdict and verdict.get("decision") == "Maybe":
+    elif decision == "Maybe":
         comp["verdict"] = V["maybe"]
         codes.append("VERDICT_MAYBE")
         facts.insert(0, f"your stored verdict is Maybe (+{V['maybe']} points)")
+    elif legacy:
+        codes.append("VERDICT_LEGACY_TEST")
+        facts.insert(0, _legacy_text(legacy))
     if c.get("hints"):
         codes.append("HINT_UNRESOLVED_IDENTITY")
     score = sum(comp.values())

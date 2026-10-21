@@ -2,7 +2,7 @@
 
 Scope: the whole working system after Day 16 (`aeac606`). Offline only: no source was contacted, no Google Sheet was written, the production database was only read (SHA-256 `a7d81f0ec514...` before and after), no migration, no merge, no restricted provider.
 
-**Verdict: READY WITH LIMITATIONS.** Ten defects were found by reproduction. Two were high impact (P1) and are fixed: LIVE feedback could leak into TEST after an interrupted LIVE sync, and any LIVE "No" blocked every later publication. Each fix has a regression test that fails on the old code. What remains is limited by source coverage and by approvals only the operator can give (LIVE capacity, provider permissions, fresh collection).
+**Verdict: READY WITH LIMITATIONS.** Nine defects were found by reproduction (F1-F3, F5-F10; the number F4 was a withdrawn candidate, see `final_operational_readiness.md` section B). Two were high impact (P1) and are fixed: LIVE feedback could leak into TEST after an interrupted LIVE sync, and any LIVE "No" blocked every later publication. Each fix has a regression test that fails on the old code. What remains is limited by source coverage and by approvals only the operator can give (LIVE capacity, provider permissions, fresh collection).
 
 ## 1. Baseline (before any change)
 

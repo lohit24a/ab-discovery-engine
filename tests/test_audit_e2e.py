@@ -163,6 +163,10 @@ def test_offline_acceptance_end_to_end(tmp_path, monkeypatch, no_network):
     company_rows = [r for r in sl if r["Type"] == "Company"]
     assert jobs["apm"] in listed and company_rows, sl         # Stream A and an independent Stream B pick
     assert jobs["apm_b"] == jobs["apm"]                                                       # same requisition id: one canonical vacancy
+    # the unresolved look-alike (same employer, title, location; no shared id) stays a separate record but does not take a second slot
+    assert jobs["apm_lookalike"] not in listed
+    apm_row = next(r for r in sl if r["record_id"] == jobs["apm"])
+    assert apm_row["Explanation"].startswith("[1 more posting(s) at this employer with the same title and location")
     assert {jobs["driver"], jobs["london"], jobs["rejected"]}.isdisjoint(listed)
     fo = next(r for r in sl if r["record_id"] == jobs["echo_fo"])                            # its source's newest attempt failed (HTTP 403)
     assert "newest attempt (2026-10-20) failed" in fo["Explanation"]
@@ -170,7 +174,17 @@ def test_offline_acceptance_end_to_end(tmp_path, monkeypatch, no_network):
     published_cos = {r["record_id"] for r in rows(live, "Companies")}
     assert {r["record_id"] for r in company_rows} <= published_cos and co["gamma"] not in published_cos
     assert all(not r["Your Verdict"] and not r["Your Notes"] for t in ("Posts", "Companies") for r in rows(live, t))   # no TEST copy
-    assert {jobs["bizops"], jobs["fde"]}.isdisjoint(listed)                                  # already reviewed (legacy Yes/Maybe): not offered as new
+    # legacy TEST Yes/Maybe are history only: offered as unreviewed in LIVE, no points, and the reason says so; legacy No stays suppressed
+    assert jobs["bizops"] in listed                                                          # (fde loses its slot to Acme's per-employer cap of 2)
+    expl = next(r for r in sl if r["record_id"] == jobs["bizops"])["Explanation"]
+    assert "an earlier TEST-sheet review said Yes (history only, not counted" in expl and "stored verdict" not in expl
+    from discovery import profile as prof, ranking_preview
+    rc = db.connect(dbp, readonly=True)
+    scored = {r["id"]: r for r in ranking_preview.rank_all(rc, prof.load_profile(), prof.load_ranking(), with_hints=False)[2]}
+    rc.close()
+    assert scored[jobs["fde"]]["verdict"] is None and scored[jobs["fde"]]["verdict_legacy"] == "Maybe"
+    assert "VERDICT_MAYBE" not in scored[jobs["fde"]]["reason_codes"] and "VERDICT_LEGACY_TEST" in scored[jobs["fde"]]["reason_codes"]
+    assert scored[jobs["rejected"]]["hard_exclusion"] == "HUMAN_NO" and "entered in the TEST sheet" in scored[jobs["rejected"]]["explanation"]
     assert all("employer-verified" not in r["Explanation"] or "not employer-verified" in r["Explanation"] for r in rows(live, "Posts"))
     assert not any("confirmed open" in r["Explanation"].lower() for r in rows(live, "Posts"))
     assert len(rows(live, "Runs")) == 1 and "no source was contacted" in rows(live, "Runs")[0]["Errors"]
@@ -213,7 +227,7 @@ def test_offline_acceptance_end_to_end(tmp_path, monkeypatch, no_network):
     tconn.close()
 
     # 5. An interrupted LIVE write keeps the person's input and is completed, recorded once.
-    live.set_cell("Posts", jobs["apm_lookalike"], "Your Verdict", "Maybe")
+    live.set_cell("Posts", jobs["bizops"], "Your Verdict", "Maybe")                          # a LIVE decision over a legacy TEST Yes
     original = live.append_rows
 
     def lose_runs(tab, data):
@@ -228,7 +242,9 @@ def test_offline_acceptance_end_to_end(tmp_path, monkeypatch, no_network):
         lpub.apply(p5, backup, authorized=True, db_path=dbp, out=lambda *_: None)
     live.append_rows = original
     c = db.connect(dbp, readonly=True)
-    assert db.get_verdict(c, job_id=jobs["apm_lookalike"])["decision"] == "Maybe"
+    assert db.get_verdict(c, job_id=jobs["bizops"])["decision"] == "Maybe"
+    from discovery import sheets_sync as _ss
+    assert jobs["bizops"] in _ss.live_decision_ids(c)                                          # provenance kept although the write failed
     c.close()
     n_runs = len(rows(live, "Runs"))
     publish()
@@ -257,6 +273,8 @@ def test_offline_acceptance_end_to_end(tmp_path, monkeypatch, no_network):
     assert c.execute("SELECT COUNT(*) FROM status_events WHERE new_state IN ('Closed', 'Not Seen')").fetchone()[0] == 0
     assert c.execute("SELECT COUNT(*) FROM identity_links").fetchone()[0] == 0
     assert c.execute("SELECT job_id FROM jobs WHERE job_id = ?", (jobs["apm_lookalike"],)).fetchone() is not None
+    from discovery import sheets_sync as _ss2
+    assert _ss2.live_decision_ids(c) == {jobs["apm"], jobs["bizops"]}                        # only decisions typed in LIVE count as LIVE
     verdicts = sorted(tuple(r) for r in c.execute("SELECT job_id, decision, notes FROM verdicts"))
     c.close()
 

@@ -45,9 +45,9 @@ Written on Day 14 from measured evidence. Where something is a guess it says so.
 * **Consider-only rows and provider confirmation:** see `docs/design/day16_open_questions.md`.
 
 ## Post-implementation audit (2026-10-21)
-* **LIVE capacity is the next operator decision.** The next batch needs about Posts 35 / Companies 36 (limits 30/30) and every publication adds one Runs row (limit 2). `live-limits --next-session` prints the smallest sufficient numbers; only the operator approves them.
-* **Same title twice in a batch.** Two postings with the same employer and title (for example BestDoc "Associate Product Manager", two board ids) can both be listed; the per-employer cap allows two. A one-row-per-title rule is a selection-policy proposal, not applied.
+* **LIVE capacity is the next operator decision.** The next batch needs Posts 35 / Companies 37 (limits 30/30; measured 2026-10-21 after the legacy-verdict change) and every publication adds one Runs row (limit 2). `live-limits --next-session` prints the smallest sufficient numbers; only the operator approves them.
+* **Same title twice in a batch.** Since 2026-10-21 a new session offers one posting per employer + title + locations and names the others on its row; the others may appear in a later session.
 * **Foreign cities read as "unknown".** About 20 held-for-review jobs with explicit foreign cities are labelled unknown location rather than foreign; they are never qualified. "Remote" without India stays in the uncertain lane by design.
-* **Stored TEST verdicts still count in ranking** (+25 Yes, +5 Maybe, No suppresses); since the audit the explanation names them first. Separating TEST and LIVE verdicts needs a migration and approval.
+* **Legacy TEST verdicts are history only** (since 2026-10-21): a TEST Yes/Maybe earns no points and the record is offered again in LIVE as unreviewed; a TEST No still suppresses until changed in LIVE. Consider-hosted boards are disabled until Consider-level permission is confirmed. A complete Accel Bengaluru scan (~152 requests) exceeds the 60-page cap and needs an approved one-run raise.
 * **A lost response on the very last LIVE write** can leave SQLite recording that run as failed while the sheet shows its Runs row; the data are complete and nothing is duplicated.
 * **A record merged away after it was published** makes the sync stop (fail closed) until the sheet row is resolved; no merge is pending.

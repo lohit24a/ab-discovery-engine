@@ -245,6 +245,21 @@ class ExperienceResult:
     detail: str = ""
 
 
+# "Head" as the role itself is a department-head title: "Head of Product", "Head - Business Finance", "Business Head", "Department
+# Head". "head" inside a reporting line is not: "Founder's Office Associate, reporting to the Head of Growth", "Chief of Staff to the
+# Head of Sales", "Assistant to Department Head". Whole words only, so headquarters / headcount / head office never count. Title-only
+# evidence, like every other title term; a description that mentions a head of department changes nothing.
+_HEAD_REPORTING = re.compile(r"\b(?:reporting\s+to|reports\s+to|assistant\s+to|office\s+of|to|for|under|supporting)\s+(?:the\s+|a\s+)?"
+                             r"[^,;|()\[\]]*?\bhead\b[^,;|()\[\]]*", re.I)
+_HEAD_UNITS = (r"department|departmental|division|divisional|business|function|functional|vertical|regional|country|zonal|zone|practice|unit|"
+               r"category|cluster|branch|city|state|area|circle|centre|center|product|sales|marketing|finance|operations|ops|growth|content|"
+               r"service|services|stores|supply|procurement|hr|people|acquisition|engineering|technology|design|brand|partnerships|strategy|"
+               r"program|programme|project|plant|site|delivery|group")
+_HEAD_ROLE = re.compile(r"^\W*head\b(?![-\s]*(?:office|quarters?|count|hunt))"                 # Head ..., at the start
+                        r"|\bhead\s*(?:of\b|[-–—:,|](?!\s*hunt))"                      # Head of X / Head - X / Head, X
+                        r"|\b(?:" + _HEAD_UNITS + r")\s+head\b", re.I)                            # Product Head, Department Head, Regional Head
+
+
 def _compile_experience(profile):
     cached = getattr(profile, "_exp_cache", None)
     if cached:
@@ -269,7 +284,10 @@ def classify_experience(title, profile, min_years=None, max_years=None, text=Non
     flags, detail = [], []
     t = title or ""
     scrubbed = re.sub(r"chief of staff", " ", t, flags=re.I)           # "chief of staff" is a target role, not an executive title
+    scrubbed = _HEAD_REPORTING.sub(" ", scrubbed)                       # a head named in a reporting line is not this role's level
     exec_hits = _find(rx["exec"], scrubbed)
+    if _HEAD_ROLE.search(scrubbed) and not any(h.startswith("head") for h in exec_hits):
+        exec_hits = exec_hits + ["head (department head)"]
     senior_hits = _find(rx["senior"], scrubbed)
     early_title = _find(rx["early_title"], t)
     early_text = _find(rx["early_text"], text or "")

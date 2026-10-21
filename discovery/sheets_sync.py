@@ -607,6 +607,21 @@ def live_verdict_ids(conn):
     return ids
 
 
+def live_decision_ids(conn):
+    """Record ids whose stored DECISION (Yes/Maybe/No) was typed, or confirmed, in a LIVE Verdict cell. LIVE human cells are only ever
+    typed by the person (stored values are never copied into them), so a non-blank LIVE Verdict is a genuine LIVE decision. A stored
+    decision NOT in this set is legacy review memory (from the TEST sheet before LIVE): ranking treats a legacy Yes/Maybe as history only
+    and keeps a legacy No in force. Notes typed in LIVE are provenance for TEST isolation (live_verdict_ids) but never turn a legacy
+    decision into a LIVE one."""
+    ids = set()
+    for (text,) in conn.execute("SELECT summary FROM runs WHERE run_type = 'sync'"):
+        try:
+            ids.update(json.loads(text or "{}").get("live_decisions", []))
+        except ValueError:
+            continue
+    return ids
+
+
 def _interrupted_live_publication(conn, runs_in_sheet):
     """The newest LIVE sync if it failed or never finished and has no row in the LIVE Runs tab, else None. Its sheet writes may have
     landed (a lost response, a stopped process), so the next LIVE sync must record the publication even if nothing is left to write."""
@@ -681,6 +696,7 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
               "Companies": {r["company_id"]: r for r in conn.execute("SELECT * FROM verdicts WHERE company_id IS NOT NULL")}}
     imports = {"Posts": [], "Companies": []}
     restores = {"Posts": {}, "Companies": {}}
+    live_typed, live_decided = set(), {}                    # LIVE only: records with person-typed human cells / a valid typed decision
     for tab, data in (("Posts", posts), ("Companies", companies)):
         state = states[tab]
         for rid in data:
@@ -697,11 +713,19 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
                     # LIVE is the authoritative review interface. Its human cells are the person's alone: never filled from the shared
                     # store. What the person types is imported; a change to older review memory is named, and never copied to TEST.
                     restore = {}
+                    typed_verdict = _verdict_value(cells[state.col[VERDICT_COLUMN]])
+                    if typed_verdict or (cells[state.col[NOTES_COLUMN]] or "").strip():
+                        live_typed.add(rid)
+                    if typed_verdict:
+                        live_decided[rid] = typed_verdict
                     report.conflicts.extend(scratch.conflicts)
                     for line in scratch.verdicts_imported:
                         older = verdict_row["decision"] if verdict_row and verdict_row["decision"] else ""
                         report.verdicts_imported.append(line + ("; replaces earlier review memory, which is not copied to TEST" if older or (verdict_row and verdict_row["notes"]) else ""))
                 elif TEST_VERDICT_IMPORT_ENABLED:
+                    # test-only emulation of the pre-LIVE world, where TEST was the review sheet and its decisions were authoritative
+                    if _verdict_value(cells[state.col[VERDICT_COLUMN]]):
+                        live_decided[rid] = _verdict_value(cells[state.col[VERDICT_COLUMN]])
                     report.conflicts.extend(scratch.conflicts)
                     report.verdicts_imported.extend(scratch.verdicts_imported)
                     report.verdicts_restored.extend(scratch.verdicts_restored)
@@ -729,6 +753,7 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     # rejected a moment ago is not listed again. `shortlist` may be a ready Shortlist or a callable(overrides) -> Shortlist.
     if callable(shortlist):
         overrides = {rid: decision for tab in ("Posts", "Companies") for rid, decision, _ in imports[tab] if decision}
+        overrides.update(live_decided)                      # a LIVE decision equal to the stored one still counts as a LIVE decision
         shortlist = shortlist(overrides)
     if shortlist is not None:
         report.session_note = (f"Review session: CONTINUING {shortlist.session_id[:8]} (same records, re-checked; nothing new is added; "
@@ -817,13 +842,15 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     if pending_run is not None:
         plans["Runs"].appends.append(_row_for(states["Runs"], report.run_id, {k: safe_cell(v) for k, v in
                                      live_run_row(now, finished_at, result, pending_run).items()}, {}))
-    live_provenance = {"target": "live", "live_verdicts": sorted(rid for tab in imports for rid, _, _ in imports[tab])} if live else {}
+    live_provenance = ({"target": "live", "live_verdicts": sorted(live_typed | {rid for tab in imports for rid, _, _ in imports[tab]}),
+                        "live_decisions": sorted(live_decided)} if live
+                       else {"live_decisions": sorted(live_decided)} if TEST_VERDICT_IMPORT_ENABLED and live_decided else {})
     try:
         with db.transaction(conn):
             for tab, kind in (("Posts", "job_id"), ("Companies", "company_id")):
                 for rid, decision, notes in imports[tab]:
                     db.save_verdict(conn, decision, notes, now=now, **{kind: rid})
-            if live:
+            if live_provenance:
                 # recorded in the SAME transaction as the import, so no crash or failed write can separate a LIVE decision from its origin
                 # (and an interrupted LIVE publication stays identifiable as one)
                 conn.execute("UPDATE runs SET summary = ? WHERE run_id = ?", (json.dumps(live_provenance), report.run_id))
@@ -847,6 +874,6 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     db.finish_run(conn, report.run_id, result, now=finished_at if pending_run is not None else now, summary={
         "appended": report.appended, "cells_updated": report.cells_updated,
         "verdicts_imported": len(report.verdicts_imported), "conflicts": len(report.conflicts),
-        **({**live_provenance, **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else {}),
+        **({**live_provenance, **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else live_provenance),
         **(shortlist.summary(report.run_id) if shortlist is not None else {})})
     return report

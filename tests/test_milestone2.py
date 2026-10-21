@@ -148,7 +148,13 @@ def test_unresolved_possible_duplicates_are_never_merged_or_hidden(conn, profile
     sl = build(conn, profile, ranking)
     assert a != b and conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == before
     assert conn.execute("SELECT COUNT(*) FROM identity_links").fetchone()[0] == 0
-    assert {r["id"] for r in sl.jobs} == {a, b}                         # both visible (cap is 2 per employer)
+    # Operator decision (final readiness): same employer + same title + same location compete for ONE slot in a new session. Neither
+    # record is merged or deleted; the offered row names the other one, and the other stays in SQLite for later sessions.
+    shown = {r["id"] for r in sl.jobs}
+    assert len(shown) == 1 and shown <= {a, b}
+    (kept,) = shown
+    other = ({a, b} - shown).pop()
+    assert sl.alternatives[kept] == [other] and "1 more posting(s)" in next(r for r in sl.rows if r["record_id"] == kept)["Explanation"]
 
 
 # --------------------------------------------------------------------- sessions

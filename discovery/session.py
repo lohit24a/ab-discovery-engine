@@ -16,6 +16,8 @@ Ranking never writes anything: this module only reads.
 
 import hashlib
 import json
+import re
+from datetime import datetime
 
 LANES = ("new_discovery", "changed", "previously_unreviewed", "uncertain_valuable")   # display order
 
@@ -83,10 +85,36 @@ def classify_lane(r, history, as_of, ranking, min_score):
     return None
 
 
-def assign_lanes(results, history, as_of, ranking, min_score=None, max_per_employer=None):
+NEW_LANES = ("new_discovery", "uncertain_valuable")
+
+
+def display_key(r):
+    """Same employer, same normalised title, same set of locations: indistinguishable rows for a reviewer. Display only: the records
+    stay separate (identity is never decided here). Companies have no key."""
+    if r.get("kind", "job") != "job" or not r.get("title"):
+        return None
+    norm = lambda s: re.sub(r"[^a-z0-9]+", " ", str(s or "").casefold()).strip()
+    return (r.get("employer_key"), norm(r["title"]), tuple(sorted({norm(x) for x in r.get("locations") or []})))
+
+
+def _stronger_first(r):
+    """Stronger verified evidence first: qualified before held-for-review, higher approved score, newer provider posting date, then id."""
+    try:
+        when = -datetime.fromisoformat(r["posting_date"]).timestamp() if r.get("posting_date") else float("inf")
+    except ValueError:
+        when = float("inf")
+    return (r.get("classification") != "confirmed_eligible", -(r.get("score") or 0), when, r["id"])
+
+
+def assign_lanes(results, history, as_of, ranking, min_score=None, max_per_employer=None, alternatives=None):
     """-> {lane: [result, ...]}: each lane sorted (recent first inside new_discovery, then score) and limited to its slots,
     sharing one generic per-employer cap across lanes. Never pads with unqualified records; slots left unused by the
-    changed / previously-unreviewed lanes are given to further qualified new discoveries. Deterministic."""
+    changed / previously-unreviewed lanes are given to further qualified new discoveries. Deterministic.
+
+    Display diversity (operator-approved): among records offered for the first time, postings from the same employer with the same
+    normalised title and locations compete for ONE slot; the one with stronger evidence is offered and the others are counted in
+    `alternatives` ({offered id: [other ids]}). They stay separate records in SQLite with all sightings and URLs and may be offered in a
+    later session. Records shown before, or carrying a verdict, are never displaced by this rule."""
     cfg = ranking["session"]
     min_score = ranking["shortlist"]["minimum_score_to_list_jobs"] if min_score is None else min_score
     cap = ranking["shortlist"]["max_per_employer"] if max_per_employer is None else max_per_employer
@@ -95,8 +123,22 @@ def assign_lanes(results, history, as_of, ranking, min_score=None, max_per_emplo
         lane = classify_lane(r, history, as_of, ranking, min_score)
         if lane:
             buckets[lane].append(r)
+    groups = {}
+    for lane in NEW_LANES:
+        for r in buckets[lane]:
+            key = display_key(r)
+            if key:
+                groups.setdefault(key, []).append((lane, r))
+    for members in groups.values():
+        if len(members) > 1:
+            members.sort(key=lambda lr: _stronger_first(lr[1]))
+            keep = members[0][1]
+            for lane, r in members[1:]:
+                buckets[lane].remove(r)
+                if alternatives is not None:
+                    alternatives.setdefault(keep["id"], []).append(r["id"])
     window = cfg["new_window_days"]
-    out, per_employer, spare = {}, {}, 0
+    out, per_employer, spare, shown_keys = {}, {}, 0, {}
     for lane in LANE_PRIORITY:
         slots = cfg["slots"][lane] + (spare if lane == "new_discovery" else 0)
         items = sorted(buckets[lane], key=lambda r: (not r.get("user_supplied"), not _is_recent(r, as_of, window), -r["score"], r["id"])
@@ -107,7 +149,14 @@ def assign_lanes(results, history, as_of, ranking, min_score=None, max_per_emplo
                 break
             if per_employer.get(r["employer_key"], 0) >= cap:
                 continue
+            key = display_key(r)
+            if lane in NEW_LANES and key in shown_keys:             # a twin of a record already offered in this session
+                if alternatives is not None:
+                    alternatives.setdefault(shown_keys[key], []).append(r["id"])
+                continue
             per_employer[r["employer_key"]] = per_employer.get(r["employer_key"], 0) + 1
+            if key:
+                shown_keys.setdefault(key, r["id"])
             chosen.append(r)
         out[lane] = chosen
         if lane != "new_discovery":

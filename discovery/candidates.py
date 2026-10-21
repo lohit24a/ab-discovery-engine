@@ -49,10 +49,14 @@ def _failed_after_success(conn, checks):
 
 
 def _verdicts(conn):
+    """Stored verdicts with their origin: 'live' when a LIVE sync recorded the decision as typed or confirmed in LIVE, else 'legacy'
+    (TEST-sheet review memory from before LIVE was authoritative). Read-only; nothing is rewritten."""
+    from .sheets_sync import live_decision_ids
+    live = live_decision_ids(conn)
     out = {"job": {}, "company": {}}
     for r in conn.execute("SELECT job_id, company_id, decision, notes FROM verdicts"):
         key = ("job", r["job_id"]) if r["job_id"] else ("company", r["company_id"])
-        out[key[0]][key[1]] = {"decision": r["decision"], "notes": r["notes"]}
+        out[key[0]][key[1]] = {"decision": r["decision"], "notes": r["notes"], "origin": "live" if key[1] in live else "legacy"}
     return out
 
 

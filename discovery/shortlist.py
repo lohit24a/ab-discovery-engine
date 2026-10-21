@@ -38,6 +38,7 @@ class Shortlist:
     publish_job_ids: set = field(default_factory=set)
     publish_company_ids: set = field(default_factory=set)
     skipped_restricted: int = 0
+    alternatives: dict = field(default_factory=dict)      # offered job id -> ids of same-employer, same-title, same-location postings not listed separately
 
     @property
     def lane_of(self):
@@ -48,7 +49,8 @@ class Shortlist:
         order = [row["record_id"] for row in self.rows]
         lanes = self.lane_of
         return {"session": {"id": self.session_id or run_id, "mode": self.mode, "order": order,
-                            "lanes": {i: lanes.get(i, "company") for i in order}},
+                            "lanes": {i: lanes.get(i, "company") for i in order},
+                            "alternatives": {k: v for k, v in sorted(self.alternatives.items()) if k in order}},
                 "listed": self.listed}
 
     @property
@@ -92,7 +94,7 @@ def build(conn, profile, ranking, *, as_of=None, history=None, upstream=None, wi
     out = Shortlist(as_of=as_of.isoformat(), skipped_restricted=len(restricted))
     if current is not None:
         return _continue(out, current, jscored, cscored, restricted, profile, ranking, as_of)
-    out.lanes = session.assign_lanes(eligible, history, as_of, ranking)
+    out.lanes = session.assign_lanes(eligible, history, as_of, ranking, alternatives=out.alternatives)
     chosen_jobs = out.jobs[: sl["jobs"]]
     keep = {r["id"] for r in chosen_jobs}
     out.lanes = {lane: [r for r in items if r["id"] in keep] for lane, items in out.lanes.items()}
@@ -144,6 +146,7 @@ def _continue(out, current, jscored, cscored, restricted, profile, ranking, as_o
     Nothing new is added and nothing is backfilled: a record that was rejected, closed, excluded or merged away is dropped and
     reported, and the list simply gets shorter. Starting the next batch is a separate, explicit act (new_session=True)."""
     out.mode, out.session_id = "continue", current["id"]
+    out.alternatives = {k: list(v) for k, v in (current.get("alternatives") or {}).items()}   # the same rows keep the same note
     by_id = {r["id"]: r for r in jscored}
     by_id.update({r["id"]: r for r in cscored.values()})
     out.lanes = {lane: [] for lane in session.LANES}
@@ -180,8 +183,11 @@ def _continue(out, current, jscored, cscored, restricted, profile, ranking, as_o
 
 def _add_row(out, kind, lane, r):
     if kind == "job":
+        alts = out.alternatives.get(r["id"]) or []
+        note = (f"[{len(alts)} more posting(s) at this employer with the same title and location are kept in the database, not listed "
+                "separately] " if alts else "")
         out.rows.append({"Type": f"Job ({LANE_LABEL[lane]})", "record_id": r["id"], "Name / Title": r["title"], "Company": r["company"],
-                         "Score": str(r["score"]), "Explanation": _short(r["explanation"]), "Link": r.get("link", "")})
+                         "Score": str(r["score"]), "Explanation": _short(note + r["explanation"]), "Link": r.get("link", "")})
         out.publish_job_ids.add(r["id"])
     else:
         out.rows.append({"Type": "Company", "record_id": r["id"], "Name / Title": r["company"], "Company": r["company"],
@@ -199,6 +205,11 @@ def render(sl):
         lines.append(f"  lane {lane}: {len(sl.lanes.get(lane, []))}")
     for rid, label, why in sl.dropped:
         lines.append(f"  dropped (not replaced): {label[:50]} [{rid[:8]}]: {why}")
+    shown = {row["record_id"] for row in sl.rows}
+    for rid, alts in sorted(sl.alternatives.items()):
+        if rid in shown:
+            lines.append(f"  [{rid[:8]}] stands for {len(alts)} more posting(s) with the same employer, title and location: "
+                         + ", ".join(a[:8] for a in alts))
     for i, row in enumerate(sl.rows, 1):
         lines.append(f"  {i:2}. {row['Type']:<18} [{row['Score']}] {row['Company']} | {row['Name / Title']}\n      {row['Explanation']}")
     return lines

@@ -118,7 +118,8 @@ def test_shipped_board_config_is_valid_unverified_and_complete_enough():
     assert all(b.min_delay_seconds >= 2 and b.max_requests <= ib.MAX_REQUESTS_CEILING for b in BOARDS.values())
     assert BOARDS["lightspeed"].board_slug == "lightspeed" and BOARDS["accel"].network_id == 8672
     # configured is not tested, and tested is not production-ready
-    assert {k for k, b in BOARDS.items() if b.enabled} == {"accel", "lightspeed", "three_one4", "peakxv", "techstars"}
+    # Consider-hosted boards are disabled until the operator confirms Consider-level permission (final readiness, 2026-10-21)
+    assert {k for k, b in BOARDS.items() if b.enabled} == {"accel", "three_one4", "techstars"}
     assert BOARDS["accel"].status == "validated_live" and BOARDS["lightspeed"].status == "validated_live"
     assert BOARDS["accel"].api == "getro_api" and BOARDS["accel"].hosts == {"jobs.accel.com", "api.getro.com"}
     assert {k for k, b in BOARDS.items() if b.status == "page_probed"} == {"blume", "nexus"}
@@ -145,7 +146,10 @@ def test_board_selection_rejects_unknown_wildcard_and_forbidden(tmp_path):
     forbidden = dict(BOARDS, accel=replace(BOARDS["accel"], permission="forbidden"))
     with pytest.raises(ib.InvestorBoardError, match="forbidden"):
         ib.select_boards(forbidden, "accel")
-    assert [b.key for b in ib.select_boards(BOARDS, "accel,accel,lightspeed")] == ["accel", "lightspeed"]
+    assert [b.key for b in ib.select_boards(BOARDS, "accel,accel,techstars")] == ["accel", "techstars"]
+    for consider_board in ("lightspeed", "peakxv"):                       # no further Consider reads without confirmed permission
+        with pytest.raises(ib.InvestorBoardError, match="not enabled"):
+            ib.select_boards(BOARDS, consider_board)
 
 
 def test_invalid_config_is_refused(tmp_path):
