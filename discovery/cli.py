@@ -941,6 +941,36 @@ def cmd_import_manual(args, db_path=None) -> int:
     return 0 if not result["errors"] else 2
 
 
+def _configure_benchmark_eval(parser):
+    parser.add_argument("--fixture", default="tests/fixtures/benchmark_day13_independent_2026.csv", help="the frozen benchmark CSV")
+    parser.add_argument("--db", help="database to read (default: the project database, opened read-only)")
+    parser.add_argument("--output-csv", default="exports/day13_benchmark_results.csv", help="per-item results (put it under exports/, which is Git-ignored)")
+    parser.add_argument("--output-json", help="also write the metrics as JSON")
+
+
+def cmd_benchmark_eval(args, db_path=None) -> int:
+    """Read-only evaluation of a frozen benchmark against the stored data. Imports nothing, writes nothing to the database or any Sheet."""
+    import json as _json
+    from . import benchmark, database, profile as prof
+    path_db = Path(args.db) if getattr(args, "db", None) else (db_path or database.resolve_db_path(PROJECT_ROOT))
+    if not path_db.is_file():
+        print("[REFUSED] database not found")
+        return 1
+    rows = benchmark.load_fixture(args.fixture)
+    created = rows[0]["fixture_created_utc"]
+    conn = database.connect(path_db, readonly=True)
+    try:
+        evaluated, ctx = benchmark.evaluate(conn, rows, prof.load_profile(), prof.load_ranking(), created)
+    finally:
+        conn.close()
+    m = benchmark.metrics(evaluated)
+    benchmark.write_results_csv(evaluated, args.output_csv)
+    print(_json.dumps(m, indent=1))
+    if args.output_json:
+        Path(args.output_json).write_text(_json.dumps(m, indent=1), encoding="utf-8")
+    return 0
+
+
 def _configure_identity_report(parser):
     parser.add_argument("--examples", type=int, default=2, help="representative examples to keep per rule")
     parser.add_argument("--output", help="also write the full report as JSON to this file (read-only otherwise)")
@@ -1059,6 +1089,7 @@ COMMANDS = {
                                 cmd_investor_boards_collect, _configure_inv_collect),
     "ranking-preview": ("Read-only ranking preview with the proposed profile and weights; publishes and changes nothing", cmd_ranking_preview, _configure_ranking_preview),
     "import-manual": ("Import jobs you supplied by hand from local files (dry run by default; --apply backs up first)", cmd_import_manual, _configure_import_manual),
+    "benchmark-eval": ("Read-only evaluation of the frozen Day 13 benchmark against stored data; imports nothing", cmd_benchmark_eval, _configure_benchmark_eval),
     "identity-report": ("Read-only identity reconciliation report (duplicate evidence by tier); changes nothing", cmd_identity_report, _configure_identity_report),
     "investor-boards-report": ("Read-only report over saved investor-board snapshots", cmd_investor_boards_report, _configure_inv_report),
     "investor-boards-import": ("Import an investor-board snapshot after YOUR approval (dry-run by default)",
