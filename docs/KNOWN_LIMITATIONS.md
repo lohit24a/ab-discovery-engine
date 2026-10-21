@@ -43,3 +43,11 @@ Written on Day 14 from measured evidence. Where something is a guess it says so.
 * **LIVE capacity.** Row limits (25/30/30/2, `config/live_publication.json`) were approved for the first trial. The next new review session would need about Posts 35 and Companies 36 and is refused until the operator approves larger numbers (`live-limits`). Limits are never widened automatically and rows are never deleted to make room.
 * **Manual acceptance waived.** The real-user LIVE verdict round trip and the manual close/reopen of Claude Code were waived by the operator and replaced by automated tests; they were not performed.
 * **Consider-only rows and provider confirmation:** see `docs/design/day16_open_questions.md`.
+
+## Post-implementation audit (2026-10-21)
+* **LIVE capacity is the next operator decision.** The next batch needs about Posts 35 / Companies 36 (limits 30/30) and every publication adds one Runs row (limit 2). `live-limits --next-session` prints the smallest sufficient numbers; only the operator approves them.
+* **Same title twice in a batch.** Two postings with the same employer and title (for example BestDoc "Associate Product Manager", two board ids) can both be listed; the per-employer cap allows two. A one-row-per-title rule is a selection-policy proposal, not applied.
+* **Foreign cities read as "unknown".** About 20 held-for-review jobs with explicit foreign cities are labelled unknown location rather than foreign; they are never qualified. "Remote" without India stays in the uncertain lane by design.
+* **Stored TEST verdicts still count in ranking** (+25 Yes, +5 Maybe, No suppresses); since the audit the explanation names them first. Separating TEST and LIVE verdicts needs a migration and approval.
+* **A lost response on the very last LIVE write** can leave SQLite recording that run as failed while the sheet shows its Runs row; the data are complete and nothing is duplicated.
+* **A record merged away after it was published** makes the sync stop (fail closed) until the sheet row is resolved; no merge is pending.

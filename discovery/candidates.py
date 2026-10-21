@@ -37,6 +37,17 @@ def _latest_checks(conn):
     return lifecycle.latest_run_checks(conn, "jobs")
 
 
+def _failed_after_success(conn, checks):
+    """source_id -> start of a FAILED job-scan attempt newer than the successful run `checks` uses, else absent. Such a job is still
+    'listed in the latest successful check', but that check is no longer the source's newest attempt and the text must say so."""
+    newest = {}
+    for r in conn.execute("SELECT source_id, started_at, outcome, scope FROM source_checks ORDER BY started_at, rowid"):
+        if not (r["scope"] or "").startswith(("companies:", "companies/")):
+            newest[r["source_id"]] = r
+    return {sid: r["started_at"] for sid, r in newest.items()
+            if r["outcome"] == "failed" and sid in checks and r["started_at"] > checks[sid]["started_at"]}
+
+
 def _verdicts(conn):
     out = {"job": {}, "company": {}}
     for r in conn.execute("SELECT job_id, company_id, decision, notes FROM verdicts"):
@@ -136,6 +147,7 @@ def load_candidates(conn, with_hints=True, upstream=None):
     """-> (job candidates, company candidates, context). Read-only."""
     verdicts = _verdicts(conn)
     checks = _latest_checks(conn)
+    failed_since = _failed_after_success(conn, checks)
     alias_jobs, alias_cos = identity.alias_ids(conn, "job"), identity.alias_ids(conn, "company")
     merged_into = {}
     if identity.table_exists(conn, "identity_links"):
@@ -201,6 +213,7 @@ def load_candidates(conn, with_hints=True, upstream=None):
                      "exp_min": r["experience_min_years"], "exp_max": r["experience_max_years"], "exp_text": r["experience_text"],
                      "state": r["lifecycle_state"], "availability": best_class,
                      "availability_source": best_source, "scan_partial": bool(best_check and (best_check.get("partial") or not best_check.get("complete"))),
+                     "newest_attempt_failed": failed_since.get(best_source),
                      "source_ids": sorted({s["source_id"] for s in ss}),
                      "source_types": sorted({(sources.get(s["source_id"]) or {}).get("source_type", "other") for s in ss}),
                      "dated": dated, "local_first_seen": r["first_seen_at"], "last_seen": max((s["last_seen_at"] for s in ss), default=r["last_seen_at"]),

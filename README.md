@@ -15,7 +15,7 @@ Everything below uses commands that exist today. If you use Claude Code you rare
 **Every time you want new jobs and companies:**
 
 1. Open the project in Claude Code and type `/run-discovery existing` (stored data, no website contacted). Read the health and source-health lines.
-2. Say whether you want a **new batch**. If you do not, you get the same current batch, re-checked. If you do, say "start the next review session".
+2. Say whether you want a **new batch**. If you do not, you get the same current batch, re-checked (your new No's drop out). If you do, say "start the next review session": Claude first shows whether LIVE has room for it (`live-limits --next-session`), then a LIVE plan for the new batch.
 3. Claude shows a read-only LIVE plan and **stops**. Read it. Reply "Approved, publish this plan" only if you accept it.
 4. Review in the LIVE sheet and type Yes / Maybe / No (section 4).
 
@@ -26,7 +26,15 @@ Details:
 3. When you want the LIVE sheet updated, say so. Claude shows a read-only plan (`discovery live-publish --plan-output exports/live_plan.json`), then **stops**. Only your new message approving *that plan* lets it make a backup and run the write.
 4. Open the LIVE Google Sheet, review, type your verdicts (section 4).
 
-To collect fresh data from the public YC and Feashliaa datasets, name them: `/run-discovery yc,feashliaa`. That contacts those two sources only. Investor boards, YC job pages and Indeed/Naukri/LinkedIn are never part of it (separate manual commands with their own approvals; Glassdoor is retired).
+**`existing` never collects anything new.** It re-ranks what is already stored. New jobs and companies only arrive when a source is collected again:
+
+| To refresh | How (each needs your yes in chat) |
+|---|---|
+| YC companies and the Feashliaa job feed | `/run-discovery yc,feashliaa` (two public datasets; an unchanged Feashliaa snapshot is reported as skipped) |
+| Investor boards (Accel, Techstars, 3one4: Getro; Lightspeed, Peak XV: Consider) | Ask Claude: it shows `discovery investor-boards-collect --boards accel --location "Bengaluru, Karnataka, India" --plan` (sends nothing), then collects only after your approval, then `discovery investor-boards-import --snapshot <file>` (preview) and `--apply` after a second approval. Consider-hosted boards also need your confirmation that you hold Consider-level permission. |
+| YC company job pages | `discovery yc-jobs-collect --authorized-by-operator --plan` first; collection and `yc-jobs-import --snapshot <file> --apply` each need your approval. |
+
+Indeed/Naukri/LinkedIn are never part of any of this (separate one-time plan codes, see `CLAUDE.md`); Glassdoor is retired. After a refresh, `/run-discovery existing` and a new batch show what is new.
 
 ## 3. TEST and LIVE
 
@@ -34,14 +42,15 @@ To collect fresh data from the public YC and Feashliaa datasets, name them: `/ru
 * **LIVE sheet** is the real one. It is written **only** by `discovery live-publish`, in two steps, and never by `sync`:
   * Plan (read-only, safe any time): `discovery live-publish --plan-output exports/live_plan.json`
   * Write (needs all of): a plan identical to a fresh one, row limits respected (`config/live_publication.json`: Shortlist 25, Posts 30, Companies 30, Runs 2 rows in total), a verified backup made in the last 2 hours, and the flag `--authorized-first-live-trial`, which records **your** approval. Claude uses the flag only after you approve the displayed plan in a new message. Your Day 15 approval covered the first trial only; every later LIVE write needs your approval again. If a limit is reached, the plan says so and only you can approve a larger number.
-* If the plan says a limit would be exceeded (the next new batch will need more than 30 Posts and 30 Companies), nothing is written. Preview exactly what is needed with `discovery live-limits --next-session` (read-only). Only you can approve larger numbers; then `discovery live-limits --set Posts=45 Companies=50 Runs=6 --operator-approved --note "approved <date>"` records them. Limits never rise on their own, never drop below the rows LIVE already holds, and old rows are never deleted or reset to make room.
+* The write is checked once more at the last moment: if anything changed since you approved the plan, nothing is written and Claude makes a new plan.
+* **Room for the next batch.** Limits count the rows a tab holds after the write; Posts, Companies and Runs only grow, and every publication adds one Runs row. With today's 25/30/30/2 the next batch does **not** fit (it needs about 35 Posts and 36 Companies) and a third publication of any kind needs Runs above 2. `discovery live-limits --next-session` (read-only) shows a table of rows now, new rows, totals and limits, and prints the smallest sufficient numbers with the exact command. Only you approve numbers; Claude then runs `discovery live-limits --set ... --operator-approved --note "..."`. Limits never rise on their own, never drop below the rows LIVE already holds, and old rows are never deleted or reset to make room.
 * LIVE shows **only the shortlist**: Posts = the listed jobs, Companies = their companies plus up to five company-only picks, Runs = one row per LIVE publication. It never deletes a row and never copies verdicts into your cells.
 
 ## 4. Reading and using the sheets
 
 | Tab | What it is |
 |---|---|
-| **Shortlist** | The current review batch (about 20 jobs plus up to 5 company-only discoveries) with score and the reasons. Rewritten by position: do not sort or type in it. |
+| **Shortlist** | The current review batch (about 20 jobs plus up to 5 company-only discoveries) with score and the reasons. Rewritten by position: do not sort or type in it. A job you mark No leaves it at the next publication and the list gets shorter (nothing replaces it); its Posts row stays. |
 | **Posts** | One row per listed job: title, company, link, where it was seen, score. **Your decision goes here.** |
 | **Companies** | Companies of listed jobs plus company-only picks (B). A company is listed even if it has no open job. |
 | **Runs** | One row per LIVE publication, saying it used stored data and whether any source needs attention. |
@@ -56,7 +65,7 @@ To collect fresh data from the public YC and Feashliaa datasets, name them: `/ru
 ## 5. Review sessions
 
 * A **session** is one batch of listed records. A normal sync **continues the current session**: same records, re-checked, rejected ones dropped, nothing new added. Running a sync again does not advance it.
-* To deliberately get the **next batch**, ask for it by name: `discovery sync --target test --with-shortlist --new-session` (preview with `--dry-run`). This deprioritises records you have already been shown. Do this only when you want new items; ask Claude to show the plan first.
+* To deliberately get the **next batch** in LIVE: `discovery live-limits --next-session` (room check), then `discovery live-publish --plan-output exports/live_plan.json --new-session` (read-only plan). The new session starts only when you approve and that plan is applied, in the same write. Records you have already been shown, or decided, are not offered again as new. (`sync --target test --with-shortlist --new-session` also exists, but it advances the session for LIVE too before LIVE's room is checked; use it only for rehearsal.)
 * Sessions are shared by TEST and LIVE. A new batch also needs LIVE row capacity (section 3, `live-limits --next-session`).
 
 ## 6. Source health: what the words mean

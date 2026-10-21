@@ -594,9 +594,12 @@ def _plan_shortlist(state, rows, report):
 
 
 def live_verdict_ids(conn):
-    """Record ids whose stored verdict/note was imported from the LIVE sheet (kept in each LIVE sync run's summary; no schema change)."""
+    """Record ids whose stored verdict/note was imported from the LIVE sheet (kept in each LIVE sync run's summary; no schema change).
+
+    Every sync run counts, whatever its result: the import is committed before any sheet write, so a LIVE sync that later failed or
+    was interrupted still imported LIVE feedback, and that feedback must never be written into TEST."""
     ids = set()
-    for (text,) in conn.execute("SELECT summary FROM runs WHERE run_type = 'sync' AND result IN ('success', 'partial')"):
+    for (text,) in conn.execute("SELECT summary FROM runs WHERE run_type = 'sync'"):
         try:
             ids.update(json.loads(text or "{}").get("live_verdicts", []))
         except ValueError:
@@ -604,12 +607,26 @@ def live_verdict_ids(conn):
     return ids
 
 
+def _interrupted_live_publication(conn, runs_in_sheet):
+    """The newest LIVE sync if it failed or never finished and has no row in the LIVE Runs tab, else None. Its sheet writes may have
+    landed (a lost response, a stopped process), so the next LIVE sync must record the publication even if nothing is left to write."""
+    for run_id, result, text in conn.execute("SELECT run_id, result, summary FROM runs WHERE run_type = 'sync' ORDER BY started_at DESC, rowid DESC"):
+        try:
+            summary = json.loads(text or "{}")
+        except ValueError:
+            continue
+        if summary.get("target") != "live":
+            continue
+        return run_id if result in ("failed", "running") and run_id not in runs_in_sheet else None
+    return None
+
+
 def _last_sync(conn):
     row = conn.execute("SELECT MAX(finished_at) FROM runs WHERE run_type = 'sync' AND result = 'success'").fetchone()
     return row[0]
 
 
-def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, scope=None):
+def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, scope=None, before_write=None):
     """Synchronize SQLite and the (TEST) spreadsheet. Returns a SyncReport; raises SyncError if unsafe.
 
     shortlist: optional shortlist.Shortlist (or a callable taking {record_id: verdict read from the sheet}). When given, the Shortlist tab is generated from it, Score/Explanation are filled for
@@ -619,7 +636,11 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     scope="live" is the first-LIVE publication scope (requires a shortlist): NEW rows come only from the displayed shortlist
     (Posts: its jobs; Companies: the companies of those jobs plus the company-only picks; never the older broad gates), the Runs tab
     shows only LIVE publications (one row, written only when the sync changes something), and stored verdicts are NOT copied into
-    LIVE's human cells (LIVE's Verdict/Notes are only ever typed by the person; what they type is still imported). Nothing is deleted."""
+    LIVE's human cells (LIVE's Verdict/Notes are only ever typed by the person; what they type is still imported). Nothing is deleted.
+
+    before_write: optional callable(report, shortlist) run on the exact final plan after the last sheet re-check and before anything
+    is recorded or written; raising SyncError there stops the sync with nothing changed (live_publish uses it to hold the write to the
+    plan the operator approved)."""
     now = now or db.utc_now()
     live = scope == LIVE_SCOPE
     if live and shortlist is None:
@@ -759,9 +780,13 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     pending_run = None
     if live:
         changed = any(plans[t].header_cells or plans[t].appends or plans[t].updates for t in ("Shortlist", "Posts", "Companies"))
-        if changed:
+        interrupted = _interrupted_live_publication(conn, found["Runs"])
+        if changed or interrupted:
+            notes = _live_notes(conn, now)
+            if interrupted:
+                notes = (f"Completes the publication interrupted in run {interrupted[:8]}. " + notes)[:500]
             summary_extra = {"new_records": len(plans["Posts"].appends) + len(plans["Companies"].appends), "shortlisted": len(shortlist.rows),
-                             "notes": _live_notes(conn, now)}
+                             "notes": notes}
             pending_run = summary_extra
             plans["Runs"].detail["appends"].append({"record_id": "(assigned when the sync runs)", "summary": LIVE_RUN_TYPE, "admitted_by": "live_publication_run"})
             report.appended["Runs"] = report.appended.get("Runs", 0) + 1
@@ -783,6 +808,8 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
         raise
     except Exception as exc:
         raise SyncError(f"Could not re-check the spreadsheet ({type(exc).__name__}); nothing was written") from exc
+    if before_write is not None:
+        before_write(report, shortlist)
 
     report.run_id = db.start_run(conn, "sync", now=now)
     finished_at = db.utc_now()
@@ -790,11 +817,16 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     if pending_run is not None:
         plans["Runs"].appends.append(_row_for(states["Runs"], report.run_id, {k: safe_cell(v) for k, v in
                                      live_run_row(now, finished_at, result, pending_run).items()}, {}))
+    live_provenance = {"target": "live", "live_verdicts": sorted(rid for tab in imports for rid, _, _ in imports[tab])} if live else {}
     try:
         with db.transaction(conn):
             for tab, kind in (("Posts", "job_id"), ("Companies", "company_id")):
                 for rid, decision, notes in imports[tab]:
                     db.save_verdict(conn, decision, notes, now=now, **{kind: rid})
+            if live:
+                # recorded in the SAME transaction as the import, so no crash or failed write can separate a LIVE decision from its origin
+                # (and an interrupted LIVE publication stays identifiable as one)
+                conn.execute("UPDATE runs SET summary = ? WHERE run_id = ?", (json.dumps(live_provenance), report.run_id))
         report.stages_completed.append("verdicts imported into SQLite")
         for tab in TAB_ORDER:
             plan = plans[tab]
@@ -806,7 +838,7 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
                 backend.write_cells(tab, plan.updates)
             report.stages_completed.append(f"{tab} written")
     except Exception as exc:
-        summary = {"stages_completed": report.stages_completed}
+        summary = {"stages_completed": report.stages_completed, **live_provenance}
         db.finish_run(conn, report.run_id, "failed", summary=summary,
                       error_detail=f"{type(exc).__name__}: {str(exc)[:200]}", now=now)
         raise SyncError(f"Sync failed part-way ({type(exc).__name__}: {str(exc)[:150]}). "
@@ -815,6 +847,6 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     db.finish_run(conn, report.run_id, result, now=finished_at if pending_run is not None else now, summary={
         "appended": report.appended, "cells_updated": report.cells_updated,
         "verdicts_imported": len(report.verdicts_imported), "conflicts": len(report.conflicts),
-        **({"target": "live", "live_verdicts": sorted(rid for tab in imports for rid, _, _ in imports[tab]), **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else {}),
+        **({**live_provenance, **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else {}),
         **(shortlist.summary(report.run_id) if shortlist is not None else {})})
     return report

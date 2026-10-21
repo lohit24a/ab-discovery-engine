@@ -9,6 +9,12 @@ Decided by the operator on 2026-10-21: **shortlist only**. Implemented as `sheet
 * **Runs**: one row per LIVE publication that changed something (at most 2 rows in total), typed "LIVE publication (stored snapshots; no new source collection)". It lists the source-health caveats at that time. The 31+ development/TEST runs stay in SQLite and are never backfilled; a historical backfill would be a separate explicit action.
 * **Human cells**: LIVE's Your Verdict / Your Notes are only ever typed by the person. Stored verdicts (from TEST) are NOT copied into LIVE; what the person types in LIVE is imported as usual. (The verdict store is one table shared by TEST and LIVE: see Known Limitations.)
 
+## Post-implementation audit corrections (2026-10-21)
+* The Shortlist tab is a regenerated view: when a rejected record leaves the batch, or a company row moves into a former job row, its cells are cleared. The gate no longer counts that as a deletion (it did, which blocked every publication after the first LIVE "No"). Clearing a cell in Posts, Companies or Runs is still refused.
+* The plan actually written must equal the approved plan and respect the limits at the moment of writing (`before_write` gate); otherwise nothing is written.
+* The next review session is planned with `live-publish --plan-output ... --new-session` and starts only inside the approved write; `live-limits --next-session` prints the smallest sufficient limits.
+* If the last write of a publication (its Runs row) fails or its response is lost, the next LIVE sync records the publication ("Completes the publication interrupted in run ...").
+
 ## How later review sessions add companies
 A new session (`--new-session` on TEST, or the equivalent decision for LIVE) produces a new shortlist. The next `live-publish` run adds, for that shortlist only, its jobs to Posts and their companies plus the new company-only picks to Companies, within the same limits. Rows already in LIVE are kept and updated (machine cells only) and are never deleted, so the sheet grows by reviewed batches. Raising a limit is a code change and needs the operator's approval.
 

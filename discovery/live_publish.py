@@ -72,14 +72,17 @@ def check_limits(report, inspection, shortlist_rows):
         for u in detail.get("updates", []):
             if u["column"] in human.get(tab, []):
                 bad.append(f"{tab}: a human-owned cell ({u['column']}) would be written")
-            if u["new"] == "" and u["old"] != "":
+            # The Shortlist tab is a machine-generated view rewritten by position: when a rejected record leaves the batch (no
+            # replacement) or a company row moves into a former job row, its cells are cleared. The records themselves stay in
+            # Posts/Companies, where nothing may ever be cleared.
+            if u["new"] == "" and u["old"] != "" and tab != "Shortlist":
                 bad.append(f"{tab}: cell {u['cell']} would be cleared")
     if report.verdicts_restored:
         bad.append("stored verdicts/notes would be written into LIVE human cells")
     if report.conflicts:
         bad.append(f"{len(report.conflicts)} verdict conflict(s)")
     if report.warnings:
-        bad.append(f"{len(report.warnings)} warning(s)")
+        bad.append(f"{len(report.warnings)} warning(s) to resolve first: " + "; ".join(w[:160] for w in report.warnings[:3]))
     for t in inspection["tabs"]:
         if inspection["tabs"][t].get("duplicate_ids"):
             bad.append(f"{t}: duplicate record ids already in LIVE")
@@ -136,8 +139,25 @@ def _verify_backup(path, db_path):
     return path.name
 
 
+def _final_plan_gate(saved, inspection):
+    """-> before_write callable for sync_to_sheets: the plan about to be written must equal the approved plan and respect the limits.
+    Seconds pass between the last check and the write; if the sheet or the data changed in that window, nothing is written."""
+    approved = {"planned": saved["planned"], "shortlist_rows": saved["shortlist_rows"]}
+
+    def gate(report, sl):
+        final = json.loads(json.dumps({"planned": report.planned, "shortlist_rows": sl.rows}, default=str))
+        if final != approved:
+            raise sheets_sync.SyncError("the plan about to be written differs from the approved plan (the sheet or the data changed in the "
+                                        "last moments); nothing was written. Make and approve a new plan")
+        bad = check_limits(report, inspection, len(sl.rows))
+        if bad:
+            raise sheets_sync.SyncError("limit violations at write time: " + "; ".join(bad[:3]) + "; nothing was written")
+    return gate
+
+
 def apply(plan_path, backup_path, *, authorized, root=db.PROJECT_ROOT, db_path=None, out=print):
-    """Perform the one bounded LIVE write. Every gate is checked before the first write request."""
+    """Perform the one bounded LIVE write. Every gate is checked before the first write request, and the plan actually written must
+    equal the approved one. A plan made with --new-session starts the next review session inside this same write (nothing earlier)."""
     if not authorized:
         raise PublishRefused("--authorized-first-live-trial is required: this is the operator's bounded first-LIVE authorization")
     db_path = Path(db_path) if db_path else db.resolve_db_path(root)
@@ -146,7 +166,8 @@ def apply(plan_path, backup_path, *, authorized, root=db.PROJECT_ROOT, db_path=N
         raise PublishRefused("the saved plan lists violations: " + "; ".join(saved["violations"][:3]))
     if db_fingerprint(db_path) != saved["db_sha256"]:
         raise PublishRefused("the production database changed since the plan was saved; make a new plan")
-    fresh = make_plan(root, db_path)
+    new_session = saved.get("mode") == "new"
+    fresh = make_plan(root, db_path, new_session=new_session)
     for key in ("planned", "shortlist_rows", "headers_to_write", "session", "mode", "counts"):
         if fresh[key] != saved[key]:
             raise PublishRefused(f"the fresh plan differs from the saved plan ({key}); nothing was written")
@@ -160,8 +181,9 @@ def apply(plan_path, backup_path, *, authorized, root=db.PROJECT_ROOT, db_path=N
     out(f"All gates passed (plan identical, limits respected, backup {backup_name} verified). Writing the bounded LIVE publication.")
     conn = db.connect(db_path)
     try:
-        build, _ = _shortlist_callable(conn)
-        report = sheets_sync.sync_to_sheets(conn, lp.open_live_write(root), dry_run=False, shortlist=build, scope=sheets_sync.LIVE_SCOPE)
+        build, _ = _shortlist_callable(conn, new_session=new_session)
+        report = sheets_sync.sync_to_sheets(conn, lp.open_live_write(root), dry_run=False, shortlist=build, scope=sheets_sync.LIVE_SCOPE,
+                                            before_write=_final_plan_gate(saved, fresh["inspection"]))
     finally:
         conn.close()
     return report
@@ -175,8 +197,11 @@ def limits_preview(root=db.PROJECT_ROOT, new_session=False):
     add = plan["counts"]["appended"]
     need = {"Shortlist": len(plan["shortlist_rows"]), **{t: cur[t] + add.get(t, 0) for t in ("Posts", "Companies", "Runs")}}
     limits = load_limits(root)
-    return {"limits": limits, "live_rows_now": cur, "rows_after_next_publication": need, "session": plan["session"][:8], "mode": plan["mode"],
-            "fits": {t: need[t] <= limits[t] for t in limits}, "other_violations": [v for v in plan["violations"] if "exceeds the approved maximum" not in v]}
+    return {"limits": limits, "live_rows_now": cur, "new_rows": {"Shortlist": need["Shortlist"], **{t: add.get(t, 0) for t in ("Posts", "Companies", "Runs")}},
+            "rows_after_next_publication": need, "session": plan["session"][:8], "mode": plan["mode"],
+            "fits": {t: need[t] <= limits[t] for t in limits},
+            "smallest_sufficient": {t: max(limits[t], need[t]) for t in limits},
+            "other_violations": [v for v in plan["violations"] if "exceeds the approved maximum" not in v]}
 
 
 def set_limits(changes, root=db.PROJECT_ROOT, note=""):

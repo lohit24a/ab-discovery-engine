@@ -146,3 +146,22 @@ def test_changing_limits_needs_the_approval_flag_and_never_goes_below_held_rows(
     assert new["Posts"] == 45 and old["Posts"] == 30 and lp.load_limits(root)["Companies"] == 50
     doc = __import__("json").loads((root / "config" / "live_publication.json").read_text(encoding="utf-8"))
     assert doc["changes"][0]["from"]["Posts"] == 30 and doc["changes"][0]["note"] == "operator approved"
+
+
+def test_an_interrupted_backup_leaves_no_file_that_looks_like_a_backup(prod, tmp_path):
+    bk = tmp_path / "bk"
+    bk.mkdir()
+    (bk / "discovery_manual_20261021-120000.db.partial").write_bytes(b"half a copy")     # what a stopped process leaves behind
+    assert backups.list_backups(bk) == []
+    made = backups.create_backup(prod, bk, "manual")
+    assert backups.list_backups(bk) == [made]
+
+
+def test_a_backup_without_manifest_is_checked_but_reported_as_unverifiable_content(prod, tmp_path):
+    made = backups.create_backup(prod, tmp_path / "bk", "nomanifest")
+    backups.manifest_path(made).unlink()
+    ok, lines = backups.verify_backup(made, restore_test=True)
+    assert ok and any("manifest: none" in x for x in lines) and any("disposable restore: OK" in x for x in lines)
+    made.write_bytes(b"\x00" * 4096)                                                       # without a manifest, damage is still caught
+    ok, lines = backups.verify_backup(made, restore_test=True)
+    assert not ok

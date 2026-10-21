@@ -145,7 +145,7 @@ def render(rows):
         for e in r["errors"][:2]:
             lines.append(f"      ! {e}")
     quiet = ("complete", "complete_filtered", "verified_empty", "derived_only", "skipped_unchanged", "no_checks")
-    attention = [f"{r['source_id']} ({r['state']})" for r in rows if r["state"] not in quiet or r["stale"]]
+    attention = [f"{r['source_id']} ({r['state']}{', stale' if r['stale'] else ''})" for r in rows if r["state"] not in quiet or r["stale"]]
     if attention:
         lines.append("Sources needing attention: " + ", ".join(attention) + ". A job missing from them proves nothing.")
     else:

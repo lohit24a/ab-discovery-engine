@@ -21,6 +21,14 @@ NOTES = [
 ]
 
 
+def _notes(profile_status, ranking_status):
+    """The first note states the configuration's real approval status (read from the files) instead of a fixed sentence."""
+    approved = all(str(s).startswith("approved") for s in (profile_status, ranking_status))
+    first = (f"Weights and role terms are operator-approved configuration (search profile: {profile_status}; ranking: {ranking_status})."
+             if approved else NOTES[0])
+    return [first] + NOTES[1:]
+
+
 def _counts(items, key):
     return dict(sorted(collections.Counter(key(i) for i in items).items(), key=lambda kv: (-kv[1], str(kv[0]))))
 
@@ -84,7 +92,7 @@ def build_preview(conn, profile, ranking, as_of=None, with_hints=True, top=None,
         return out
 
     return {
-        "as_of": as_of.isoformat(), "profile_status": profile.status, "ranking_status": ranking["status"], "notes": NOTES,
+        "as_of": as_of.isoformat(), "profile_status": profile.status, "ranking_status": ranking["status"], "notes": _notes(profile.status, ranking["status"]),
         "considered": {"job_rows_in_database": raw_jobs, "distinct_canonical_jobs": len(jobs), "company_rows_in_database": raw_companies,
                        "distinct_canonical_companies": len(companies)},
         "jobs": {

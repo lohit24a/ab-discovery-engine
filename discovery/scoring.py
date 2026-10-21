@@ -290,7 +290,11 @@ def score_job(c, profile, ranking, as_of):
     if c.get("scan_partial"):
         codes.append("SCAN_PARTIAL")
     src = ", ".join(c.get("source_ids", [])[:2]) or "source"
-    facts.append(AVAILABILITY_TEXT[av].format(src=src) + (" [partial scan]" if c.get("scan_partial") and av == "in_latest_check" else ""))
+    caveat = ""
+    if av == "in_latest_check" and c.get("newest_attempt_failed"):
+        codes.append("SOURCE_NEWEST_ATTEMPT_FAILED")
+        caveat = f" [the source's newest attempt ({str(c['newest_attempt_failed'])[:10]}) failed; this listing is from its earlier successful check]"
+    facts.append(AVAILABILITY_TEXT[av].format(src=src) + (" [partial scan]" if c.get("scan_partial") and av == "in_latest_check" else "") + caveat)
     if av == "historical":
         review.append("historical or provider-retained listing")
     elif av == "observed_earlier":
@@ -342,10 +346,11 @@ def score_job(c, profile, ranking, as_of):
     if verdict and verdict.get("decision") == "Yes":
         comp["verdict"] = V["yes"]
         codes.append("VERDICT_YES")
-        facts.append("you previously marked this Yes")
+        facts.insert(0, f"your stored verdict is Yes (+{V['yes']} points)")      # first, so a long explanation never hides it
     elif verdict and verdict.get("decision") == "Maybe":
         comp["verdict"] = V["maybe"]
         codes.append("VERDICT_MAYBE")
+        facts.insert(0, f"your stored verdict is Maybe (+{V['maybe']} points)")
     if c.get("hints"):
         codes.append("HINT_UNRESOLVED_IDENTITY")
     if c.get("merged_records"):
@@ -477,8 +482,11 @@ def score_company(c, profile, ranking):
     if verdict and verdict.get("decision") == "Yes":
         comp["verdict"] = V["yes"]
         codes.append("VERDICT_YES")
+        facts.insert(0, f"your stored verdict is Yes (+{V['yes']} points)")
     elif verdict and verdict.get("decision") == "Maybe":
         comp["verdict"] = V["maybe"]
+        codes.append("VERDICT_MAYBE")
+        facts.insert(0, f"your stored verdict is Maybe (+{V['maybe']} points)")
     if c.get("hints"):
         codes.append("HINT_UNRESOLVED_IDENTITY")
     score = sum(comp.values())

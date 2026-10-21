@@ -301,13 +301,22 @@ def cmd_live_limits(args) -> int:
     except (live_publish.PublishRefused, sheets_sync.SyncError) as exc:
         print(f"[REFUSED] {exc}")
         return 1
-    print(f"Approved limits (config/live_publication.json): {info['limits']}")
-    print(f"LIVE holds now: {info['live_rows_now']}")
-    print(f"After the next publication ({info['mode']} session {info['session']}): {info['rows_after_next_publication']}")
-    for tab, ok in info["fits"].items():
-        print(f"  {tab}: {'fits' if ok else 'WOULD EXCEED the limit'}")
+    session = f"continuing session {info['session']}" if info["mode"] == "continue" else "a NEW review session (its id is assigned when it is published)"
+    print(f"Next LIVE publication: {session}. Read-only preview; nothing was changed.")
+    print(f"  {'tab':<10} {'in LIVE now':>11} {'new rows':>9} {'after':>6} {'approved':>9}  status")
+    for tab in info["limits"]:
+        now = info["live_rows_now"][tab] if tab != "Shortlist" else "-"
+        print(f"  {tab:<10} {now!s:>11} {info['new_rows'][tab]:>9} {info['rows_after_next_publication'][tab]:>6} {info['limits'][tab]:>9}  "
+              + ("fits" if info["fits"][tab] else "WOULD EXCEED"))
+    print("  (Shortlist is rewritten in place: its count is the size of the batch. Posts, Companies and Runs only grow; nothing is ever deleted.)")
     if not all(info["fits"].values()):
-        print("The next publication would be refused. Only the operator can approve larger numbers; nothing is widened automatically.")
+        need = {t: v for t, v in info["smallest_sufficient"].items() if v != info["limits"][t]}
+        print("This publication would be refused. Smallest limits that allow exactly this publication: "
+              + ", ".join(f"{t}={v}" for t, v in need.items()) + ".")
+        print("Approving raises those caps for every later publication too (it is not a one-off), deletes nothing and does not change ranking;")
+        print("a later batch may need another increase. Only the operator can approve numbers; nothing is widened automatically. After approval:")
+        print("  python -m discovery live-limits --set " + " ".join(f"{t}={v}" for t, v in need.items())
+              + ' --operator-approved --note "approved by the operator on <date>"')
     for v in info["other_violations"]:
         print("  ! " + v)
     return 0
@@ -318,6 +327,8 @@ def _configure_live_publish(parser):
     parser.add_argument("--apply", action="store_true", help="perform the one bounded LIVE write described by --plan (needs every gate below)")
     parser.add_argument("--plan", help="the saved plan file to execute (must equal a fresh plan)")
     parser.add_argument("--backup", help="the fresh verified SQLite backup taken just before this write")
+    parser.add_argument("--new-session", action="store_true",
+                        help="with --plan-output: plan the NEXT review session (the next batch). It starts only when that saved plan is applied")
     parser.add_argument("--authorized-first-live-trial", action="store_true",
                         help="the operator's bounded first-LIVE authorization (2026-10-21); limits are enforced in code")
 
@@ -333,7 +344,7 @@ def cmd_live_publish(args) -> int:
             report = live_publish.apply(args.plan, args.backup, authorized=args.authorized_first_live_trial)
             print(chr(10).join(report.lines()))
             return 2 if report.conflicts else 0
-        plan = live_publish.make_plan()
+        plan = live_publish.make_plan(new_session=getattr(args, "new_session", False))
     except (live_publish.PublishRefused, sheets_sync.SyncError) as exc:
         print(f"[REFUSED] {exc}")
         return 1
