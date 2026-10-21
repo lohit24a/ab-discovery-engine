@@ -374,7 +374,7 @@ def test_skill_is_user_invoked_only_and_has_no_scheduling_or_live():
     assert "--target test" in body and "dry-run" in body and "Never" in body
     for forbidden in ("--target live", "cron", "ScheduleWakeup", "CronCreate", "pip install", "init-db --"):
         assert forbidden not in body
-    assert "Enable or touch LIVE, schedule future runs" in body and "install packages" in body
+    assert "Touch LIVE except through the guarded `live-publish`" in body and "schedule future runs" in body and "install packages" in body
     parser = cli.build_parser()
     help_text = parser.format_help() + "".join(a.format_help() for a in
                                                [s for s in parser._subparsers._group_actions[0].choices.values()])

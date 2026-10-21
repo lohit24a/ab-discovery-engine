@@ -37,3 +37,9 @@ Written on Day 14 from measured evidence. Where something is a guess it says so.
 * **First LIVE is stored evidence only.** Accel is partial (2,988 of 2,993), Nexus failed and was never imported, Lightspeed/Peak XV/Techstars are complete only for their Bengaluru filter, yc_jobs is incomplete (42 of 52 scopes unproven). Posts are labelled "observed on source, not employer-verified"; nothing is confirmed open.
 * **Consider-only rows.** Four listed jobs (Khatabook, Stable Money, apna, composio) are seen only on Consider-hosted boards, whose use rests on the operator's attested, unverified authorization.
 * **Runs tab.** Only LIVE publications are shown; development history is in SQLite.
+
+## Day 16 additions
+* **TEST is rehearsal only.** Verdicts typed in TEST are ignored with a warning (one verdict store still serves both sheets). Decisions are entered in LIVE. A target-scoped verdict table (migration, number not assigned) is a future option, not approved.
+* **LIVE capacity.** Row limits (25/30/30/2, `config/live_publication.json`) were approved for the first trial. The next new review session would need about Posts 35 and Companies 36 and is refused until the operator approves larger numbers (`live-limits`). Limits are never widened automatically and rows are never deleted to make room.
+* **Manual acceptance waived.** The real-user LIVE verdict round trip and the manual close/reopen of Claude Code were waived by the operator and replaced by automated tests; they were not performed.
+* **Consider-only rows and provider confirmation:** see `docs/design/day16_open_questions.md`.

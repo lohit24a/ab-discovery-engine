@@ -148,3 +148,13 @@ def test_milestone_2_chain(conn, profile, ranking, tmp_path):
     assert len({r[0] for r in backend.data("Posts")}) == len(backend.data("Posts"))                      # no duplicate rows
     assert dict(db.get_verdict(conn, job_id=first_job))["notes"] == "wrong stage for me"
     assert conn.execute("SELECT COUNT(*) FROM identity_links WHERE status != 'confirmed'").fetchone()[0] == 0   # nothing was merged on a guess
+
+
+import pytest as _pytest_iso
+
+
+@_pytest_iso.fixture(autouse=True)
+def _legacy_verdict_mechanics(monkeypatch):
+    """These tests exercise the reconcile mechanics; production TEST syncs refuse verdict imports (see test_day16_verdict_isolation.py)."""
+    from discovery import sheets_sync as _ss
+    monkeypatch.setattr(_ss, "TEST_VERDICT_IMPORT_ENABLED", True)

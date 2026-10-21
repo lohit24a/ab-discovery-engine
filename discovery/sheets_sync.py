@@ -39,6 +39,9 @@ from .sheets_schema import (HUMAN, KEY, KEY_COLUMN, MACHINE, NOTES_COLUMN, TAB_C
 WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 LIVE_BLOCKED = "LIVE synchronization is not enabled; only --target test is allowed"
 LIVE_STATES = ("New", "Active", "Changed", "Reopened")
+# While one SQLite verdict table serves both sheets, a TEST sync never imports verdicts/notes (LIVE is authoritative) and never writes
+# LIVE-origin decisions into TEST cells. The switch exists only so the reconcile mechanics stay unit-testable; nothing in the CLI sets it.
+TEST_VERDICT_IMPORT_ENABLED = False
 LIVE_SCOPE = "live"        # the explicit first-LIVE publication scope (see sync_to_sheets)
 LIVE_RUN_TYPE = "LIVE publication (stored snapshots; no new source collection)"
 BATCH_LIMIT = 500
@@ -590,6 +593,17 @@ def _plan_shortlist(state, rows, report):
     return plan
 
 
+def live_verdict_ids(conn):
+    """Record ids whose stored verdict/note was imported from the LIVE sheet (kept in each LIVE sync run's summary; no schema change)."""
+    ids = set()
+    for (text,) in conn.execute("SELECT summary FROM runs WHERE run_type = 'sync' AND result IN ('success', 'partial')"):
+        try:
+            ids.update(json.loads(text or "{}").get("live_verdicts", []))
+        except ValueError:
+            continue
+    return ids
+
+
 def _last_sync(conn):
     row = conn.execute("SELECT MAX(finished_at) FROM runs WHERE run_type = 'sync' AND result = 'success'").fetchone()
     return row[0]
@@ -641,6 +655,7 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
 
     # 2. Reconcile human-owned fields.
     last_sync = _last_sync(conn)
+    live_ids = live_verdict_ids(conn)
     stored = {"Posts": {r["job_id"]: r for r in conn.execute("SELECT * FROM verdicts WHERE job_id IS NOT NULL")},
               "Companies": {r["company_id"]: r for r in conn.execute("SELECT * FROM verdicts WHERE company_id IS NOT NULL")}}
     imports = {"Posts": [], "Companies": []}
@@ -653,16 +668,37 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
                 row_num, cells = found[tab][rid]
                 noun = "Job" if tab == "Posts" else "Company"
                 label = f"{noun} {data[rid].get('Job Title') or data[rid].get('Company')} [{rid[:8]}]"
-                shown = len(report.verdicts_restored)
+                scratch = SyncReport(dry_run=True)          # reconcile into a scratch report; the target's policy decides what is kept
                 imp, restore, _ = reconcile_human(label, cells[state.col[VERDICT_COLUMN]],
-                                                  cells[state.col[NOTES_COLUMN]], verdict_row, last_sync, report)
-                if live:                                    # LIVE's human cells are the person's alone: never filled from the shared store
+                                                  cells[state.col[NOTES_COLUMN]], verdict_row, last_sync, scratch)
+                report.warnings.extend(scratch.warnings)
+                if live:
+                    # LIVE is the authoritative review interface. Its human cells are the person's alone: never filled from the shared
+                    # store. What the person types is imported; a change to older review memory is named, and never copied to TEST.
                     restore = {}
-                    del report.verdicts_restored[shown:]
+                    report.conflicts.extend(scratch.conflicts)
+                    for line in scratch.verdicts_imported:
+                        older = verdict_row["decision"] if verdict_row and verdict_row["decision"] else ""
+                        report.verdicts_imported.append(line + ("; replaces earlier review memory, which is not copied to TEST" if older or (verdict_row and verdict_row["notes"]) else ""))
+                elif TEST_VERDICT_IMPORT_ENABLED:
+                    report.conflicts.extend(scratch.conflicts)
+                    report.verdicts_imported.extend(scratch.verdicts_imported)
+                    report.verdicts_restored.extend(scratch.verdicts_restored)
+                else:
+                    # TEST never imports verdicts or notes while one store serves both sheets, and never receives LIVE feedback.
+                    if rid in live_ids:
+                        restore = {}                        # this record's stored decision came from LIVE: never write it into TEST
+                    else:
+                        report.verdicts_restored.extend(scratch.verdicts_restored)    # legacy TEST decisions may still refill a blank TEST cell
+                    ignored = scratch.verdicts_imported + scratch.conflicts
+                    if imp or ignored:
+                        report.warnings.append(f"{label}: an edit or difference in the TEST sheet was ignored (LIVE is authoritative while one verdict "
+                                               "store serves both sheets); nothing was saved or overwritten")
+                    imp = None
                 if imp:
                     imports[tab].append((rid, *imp))
                 restores[tab][rid] = {"row": row_num, "cells": restore}
-            elif verdict_row and not live:
+            elif verdict_row and not live and rid not in live_ids:
                 restores[tab][rid] = {"row": None, "cells": {VERDICT_COLUMN: verdict_row["decision"] or "",
                                                               NOTES_COLUMN: verdict_row["notes"]}}
                 report.verdicts_restored.append(
@@ -779,6 +815,6 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, sc
     db.finish_run(conn, report.run_id, result, now=finished_at if pending_run is not None else now, summary={
         "appended": report.appended, "cells_updated": report.cells_updated,
         "verdicts_imported": len(report.verdicts_imported), "conflicts": len(report.conflicts),
-        **({"target": "live", **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else {}),
+        **({"target": "live", "live_verdicts": sorted(rid for tab in imports for rid, _, _ in imports[tab]), **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else {}),
         **(shortlist.summary(report.run_id) if shortlist is not None else {})})
     return report

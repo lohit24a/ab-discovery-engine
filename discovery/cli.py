@@ -216,6 +216,103 @@ def cmd_sync(args) -> int:
     return 2 if report.conflicts else 0
 
 
+def _configure_backup(parser):
+    parser.add_argument("--label", default="manual", help="short word in the file name (letters, digits, _ and -); default: manual")
+    parser.add_argument("--db", help="database to back up (default: the project database)")
+    parser.add_argument("--dir", help="where to put it (default: backups/, which Git ignores)")
+
+
+def cmd_backup(args) -> int:
+    from . import backups, database
+
+    path = Path(args.db) if args.db else database.resolve_db_path(PROJECT_ROOT)
+    try:
+        made = backups.create_backup(path, args.dir, args.label)
+    except backups.BackupError as exc:
+        print(f"[FAIL] Backup not made: {exc}")
+        return 1
+    ok, lines = backups.verify_backup(made)
+    print(f"[OK] Backup created and verified: {made}")
+    for line in lines:
+        print("  " + line)
+    print("The production database was not changed. To prove it can be restored, run: python -m discovery backup-verify --latest --restore-test")
+    return 0 if ok else 1
+
+
+def _configure_backup_verify(parser):
+    parser.add_argument("path", nargs="?", help="a backup file (default with --latest: the newest in backups/)")
+    parser.add_argument("--latest", action="store_true", help="check the newest backup in backups/")
+    parser.add_argument("--restore-test", action="store_true",
+                        help="also restore it into a disposable folder, compare every table with the manifest, then delete the copy")
+    parser.add_argument("--dir", help="backup folder (default: backups/)")
+
+
+def cmd_backup_verify(args) -> int:
+    from . import backups
+
+    target = args.path
+    if not target:
+        found = backups.list_backups(args.dir)
+        if not (args.latest and found):
+            print("[FAIL] Give a backup file, or use --latest when backups/ contains one")
+            return 1
+        target = found[-1]
+    ok, lines = backups.verify_backup(target, restore_test=args.restore_test)
+    print(chr(10).join(lines))
+    print("[OK] Backup is sound" if ok else "[FAIL] Backup has problems: do not rely on it")
+    return 0 if ok else 1
+
+
+def cmd_backup_list(args) -> int:
+    from . import backups
+
+    found = backups.list_backups()
+    if not found:
+        print("No backups yet. Make one with: python -m discovery backup")
+        return 0
+    for p in found:
+        print(f"{p.name}  {p.stat().st_size / 1e6:.1f} MB" + ("" if backups.manifest_path(p).is_file() else "  (no manifest)"))
+    return 0
+
+
+def _configure_live_limits(parser):
+    parser.add_argument("--next-session", action="store_true", help="preview what the NEXT batch (a new review session) would need; records nothing")
+    parser.add_argument("--set", nargs="+", metavar="TAB=ROWS", help="change limits, e.g. Posts=45 Companies=50 Runs=6 (needs --operator-approved)")
+    parser.add_argument("--operator-approved", action="store_true", help="records that the operator approved these exact new numbers in a message")
+    parser.add_argument("--note", default="", help="why (kept in the file's change history)")
+
+
+def cmd_live_limits(args) -> int:
+    from . import live_publish, sheets_sync
+
+    try:
+        if args.set:
+            if not args.operator_approved:
+                print("[REFUSED] Changing a limit needs the operator's explicit approval of the exact numbers (--operator-approved). Nothing was changed.")
+                return 1
+            changes = {}
+            for item in args.set:
+                tab, _, value = item.partition("=")
+                changes[tab] = int(value) if value.isdigit() else value
+            old, new = live_publish.set_limits(changes, note=args.note)
+            print(f"Limits changed from {old} to {new}. Record this in the implementation guide.")
+            return 0
+        info = live_publish.limits_preview(new_session=args.next_session)
+    except (live_publish.PublishRefused, sheets_sync.SyncError) as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    print(f"Approved limits (config/live_publication.json): {info['limits']}")
+    print(f"LIVE holds now: {info['live_rows_now']}")
+    print(f"After the next publication ({info['mode']} session {info['session']}): {info['rows_after_next_publication']}")
+    for tab, ok in info["fits"].items():
+        print(f"  {tab}: {'fits' if ok else 'WOULD EXCEED the limit'}")
+    if not all(info["fits"].values()):
+        print("The next publication would be refused. Only the operator can approve larger numbers; nothing is widened automatically.")
+    for v in info["other_violations"]:
+        print("  ! " + v)
+    return 0
+
+
 def _configure_live_publish(parser):
     parser.add_argument("--plan-output", help="read-only: read the LIVE sheet, plan the bounded first publication and save the exact plan here (under exports/)")
     parser.add_argument("--apply", action="store_true", help="perform the one bounded LIVE write described by --plan (needs every gate below)")
@@ -1136,6 +1233,10 @@ COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
     "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
     "sync": ("Synchronize SQLite with the TEST Google Sheet", cmd_sync, _configure_sync),
+    "backup": ("Make a verified, timestamped SQLite backup in backups/", cmd_backup, _configure_backup),
+    "backup-verify": ("Check a backup (and optionally prove it restores into a disposable copy)", cmd_backup_verify, _configure_backup_verify),
+    "backup-list": ("List the backups in backups/", cmd_backup_list, lambda p: None),
+    "live-limits": ("Preview LIVE row limits and capacity (read-only); changing them needs operator approval", cmd_live_limits, _configure_live_limits),
     "live-publish": ("Plan (read-only) or perform the bounded first-LIVE publication", cmd_live_publish, _configure_live_publish),
     "import-yc": ("Import Y Combinator companies (Stream B)", cmd_import_yc, _configure_import_yc),
     "import-feashliaa": ("Import filtered jobs from the Feashliaa feed (Stream A)", cmd_import_feashliaa,

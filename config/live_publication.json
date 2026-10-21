@@ -1,0 +1,5 @@
+{
+  "_note": "Maximum rows each LIVE tab may hold after a live-publish write. These values are the operator's written approval (first controlled LIVE trial, 2026-10-21). Raising a limit is an operator decision: change it only when the operator has explicitly approved the new number, and record it in the implementation guide.",
+  "max_rows": {"Shortlist": 25, "Posts": 30, "Companies": 30, "Runs": 2},
+  "approved_by": "operator, 2026-10-21 (first trial values)"
+}

@@ -437,3 +437,13 @@ def test_duplicate_or_unknown_sheet_rows_abort_before_any_shortlist_write(conn, 
 def test_test_and_live_stay_separate(conn):
     with pytest.raises(Exception):
         ss.open_backend("live")
+
+
+import pytest as _pytest_iso
+
+
+@_pytest_iso.fixture(autouse=True)
+def _legacy_verdict_mechanics(monkeypatch):
+    """These tests exercise the reconcile mechanics; production TEST syncs refuse verdict imports (see test_day16_verdict_isolation.py)."""
+    from discovery import sheets_sync as _ss
+    monkeypatch.setattr(_ss, "TEST_VERDICT_IMPORT_ENABLED", True)

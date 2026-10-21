@@ -586,3 +586,13 @@ def test_schema_owner_summary_is_consistent():
 def test_sync_cli_dry_run_requires_target():
     with pytest.raises(SystemExit):
         cli.main(["sync", "--dry-run"])
+
+
+import pytest as _pytest_iso
+
+
+@_pytest_iso.fixture(autouse=True)
+def _legacy_verdict_mechanics(monkeypatch):
+    """These tests exercise the reconcile mechanics; production TEST syncs refuse verdict imports (see test_day16_verdict_isolation.py)."""
+    from discovery import sheets_sync as _ss
+    monkeypatch.setattr(_ss, "TEST_VERDICT_IMPORT_ENABLED", True)

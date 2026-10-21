@@ -22,7 +22,23 @@ from . import profile as prof
 from . import sheets_sync, shortlist as shortlist_mod
 from .sheets_schema import TAB_ORDER
 
-LIMITS = {"Shortlist": 25, "Posts": 30, "Companies": 30, "Runs": 2}
+DEFAULT_LIMITS = {"Shortlist": 25, "Posts": 30, "Companies": 30, "Runs": 2}   # the first-trial approval; the file may only be read, never guessed larger
+
+
+def load_limits(root=db.PROJECT_ROOT):
+    """Row limits from config/live_publication.json (the operator's approved numbers). A missing or malformed file means the
+    first-trial defaults, never a larger number."""
+    path = Path(root) / "config" / "live_publication.json"
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))["max_rows"]
+        if set(rows) == set(DEFAULT_LIMITS) and all(isinstance(v, int) and v > 0 for v in rows.values()):
+            return dict(rows)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return dict(DEFAULT_LIMITS)
+
+
+LIMITS = load_limits()
 ALLOWED_ADMISSION = {"Posts": {"shortlist"}, "Companies": {"shortlist_company", "shortlist_job_company"}, "Runs": {"live_publication_run"}}
 BACKUP_MAX_AGE_MINUTES = 120
 
@@ -81,7 +97,7 @@ def _shortlist_callable(conn, new_session=False):
     return build, holder
 
 
-def make_plan(root=db.PROJECT_ROOT, db_path=None):
+def make_plan(root=db.PROJECT_ROOT, db_path=None, new_session=False):
     """Read-only: read LIVE, plan, check the limits. -> plan dict (JSON-serialisable)."""
     db_path = Path(db_path) if db_path else db.resolve_db_path(root)
     conn = db.connect(db_path, readonly=True)
@@ -89,7 +105,7 @@ def make_plan(root=db.PROJECT_ROOT, db_path=None):
         backend = lp.open_live_readonly(root)
         valid = {"Posts": {r[0] for r in conn.execute("SELECT job_id FROM jobs")}, "Companies": {r[0] for r in conn.execute("SELECT company_id FROM companies")}}
         inspection = lp.inspect_sheet(backend, valid)
-        build, holder = _shortlist_callable(conn)
+        build, holder = _shortlist_callable(conn, new_session=new_session)
         report = lp.plan_sync(conn, backend, shortlist=build)
         sl = holder["sl"]
         violations = check_limits(report, inspection, len(sl.rows))
@@ -149,3 +165,35 @@ def apply(plan_path, backup_path, *, authorized, root=db.PROJECT_ROOT, db_path=N
     finally:
         conn.close()
     return report
+
+
+def limits_preview(root=db.PROJECT_ROOT, new_session=False):
+    """Read-only: the approved limits, what LIVE holds now, and what the NEXT publication would need. Changes nothing, anywhere.
+    With new_session the plan is the one the next batch (--new-session) would produce; nothing is recorded."""
+    plan = make_plan(root, new_session=new_session)
+    cur = {t: plan["inspection"]["tabs"][t]["data_rows"] for t in TAB_ORDER}
+    add = plan["counts"]["appended"]
+    need = {"Shortlist": len(plan["shortlist_rows"]), **{t: cur[t] + add.get(t, 0) for t in ("Posts", "Companies", "Runs")}}
+    limits = load_limits(root)
+    return {"limits": limits, "live_rows_now": cur, "rows_after_next_publication": need, "session": plan["session"][:8], "mode": plan["mode"],
+            "fits": {t: need[t] <= limits[t] for t in limits}, "other_violations": [v for v in plan["violations"] if "exceeds the approved maximum" not in v]}
+
+
+def set_limits(changes, root=db.PROJECT_ROOT, note=""):
+    """Write new row limits to config/live_publication.json. Only the CLI's explicit --operator-approved path calls this. Limits can be raised
+    or lowered but never below the rows LIVE already holds (no deleting records to make capacity, no resetting history)."""
+    path = Path(root) / "config" / "live_publication.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    current = load_limits(root)
+    plan = make_plan(root)
+    held = {t: plan["inspection"]["tabs"][t]["data_rows"] for t in TAB_ORDER}
+    for tab, value in changes.items():
+        if tab not in current:
+            raise PublishRefused(f"unknown tab {tab}")
+        if not isinstance(value, int) or value < max(held[tab], 1):
+            raise PublishRefused(f"{tab}: a limit must be a whole number of at least the {held[tab]} rows LIVE already holds")
+    new = {**current, **changes}
+    doc["max_rows"] = new
+    doc.setdefault("changes", []).append({"when": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "from": current, "to": new, "note": note[:200]})
+    path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    return current, new
