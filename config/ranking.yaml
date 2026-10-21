@@ -94,7 +94,12 @@ jobs:
     sector_interest_per_match: 3
     sector_interest_cap: 9
     startup_signal: 3
+    # Investor-board MEMBERSHIP (Day 14, operator-approved initial policy; +3 is not claimed to be optimal): points per board that lists the employer, PLUS the
+    # investor_board source-quality points above when the job itself was sighted on a board, together capped at investor_membership_cap per job however many
+    # boards carry it. Independently sourced evidence (a feed or YC sighting), the observation's availability class and any provider-reported date are scored
+    # separately and are not part of this cap. A feed-only job is never penalised for having no board sighting. Membership is not a vacancy confirmation.
     investor_board_listed: 3
+    investor_membership_cap: 3
     yc_company: 3
     also_a_company_candidate: 3
   verdict:

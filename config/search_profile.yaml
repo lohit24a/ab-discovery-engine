@@ -143,6 +143,7 @@ role_families:
       - "technical solutions"
       - "applied engineer"
     weak_aliases:
+      - "forward deployment"      # Day 14 (operator-approved): a title variant, weak/contextual only; needs corroboration in the title to count as more than a review lead
       - "solutions architect"
       - "technical account manager"
       - "customer success engineer"

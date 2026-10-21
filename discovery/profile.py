@@ -219,8 +219,8 @@ RANKING_SCHEMA = {
         "availability": ["employer_confirmed_open", "in_latest_check", "observed_earlier", "unknown", "historical"],
         "listing_age": ["fresh_days", "fresh_points", "recent_days", "recent_points", "stale_days", "stale_points"],
         "source_quality": ["ats_feed", "investor_board", "yc", "manual", "aggregator", "other"],
-        "company": ["sector_interest_per_match", "sector_interest_cap", "startup_signal", "investor_board_listed", "yc_company",
-                    "also_a_company_candidate"],
+        "company": ["sector_interest_per_match", "sector_interest_cap", "startup_signal", "investor_board_listed", "investor_membership_cap",
+                    "yc_company", "also_a_company_candidate"],
         "verdict": ["yes", "maybe"],
     },
     "companies": {

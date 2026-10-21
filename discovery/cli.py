@@ -852,7 +852,7 @@ def _configure_ranking_preview(parser):
     parser.add_argument("--no-hints", action="store_true", help="skip the unresolved-identity review hints (faster)")
     parser.add_argument("--case-job-id", action="append", default=[], help="job id (prefix) to report individually in the preview; repeatable")
     parser.add_argument("--with-cached-upstream-attributes", action="store_true",
-                        help="also read source-reported level / recruiter flags from the already-cached Feashliaa feed on disk (offline, no network)")
+                        help="also read source-reported level / recruiter flags from the already-saved Feashliaa feed cache and investor-board snapshots on disk (offline, no network)")
 
 
 def cmd_ranking_preview(args, db_path=None) -> int:
@@ -874,7 +874,7 @@ def cmd_ranking_preview(args, db_path=None) -> int:
         upstream = None
         if getattr(args, "with_cached_upstream_attributes", False):
             from . import upstream_attrs
-            upstream = upstream_attrs.load_feashliaa_attributes(ro)
+            upstream = upstream_attrs.merge(upstream_attrs.load_feashliaa_attributes(ro), upstream_attrs.load_board_attributes())
         preview = ranking_preview.build_preview(ro, pr, rk, as_of=as_of, with_hints=not getattr(args, "no_hints", False),
                                                   case_job_ids=tuple(getattr(args, "case_job_id", []) or ()), upstream=upstream)
     finally:
@@ -968,6 +968,28 @@ def cmd_benchmark_eval(args, db_path=None) -> int:
     print(_json.dumps(m, indent=1))
     if args.output_json:
         Path(args.output_json).write_text(_json.dumps(m, indent=1), encoding="utf-8")
+    return 0
+
+
+def _configure_source_health(parser):
+    parser.add_argument("--db", help="database to read (default: the project database, opened read-only)")
+    parser.add_argument("--json", action="store_true", help="print machine-readable JSON instead of text")
+
+
+def cmd_source_health(args, db_path=None) -> int:
+    """Read-only: states and confidence of each source's newest collecting run. Never changes a job or a source."""
+    import json as _json
+    from . import database, source_health
+    path_db = Path(args.db) if getattr(args, "db", None) else (db_path or database.resolve_db_path(PROJECT_ROOT))
+    if not path_db.is_file():
+        print("[REFUSED] database not found")
+        return 1
+    conn = database.connect(path_db, readonly=True)
+    try:
+        rows = source_health.source_health(conn)
+    finally:
+        conn.close()
+    print(_json.dumps(rows, indent=1, default=str) if args.json else chr(10).join(source_health.render(rows)))
     return 0
 
 
@@ -1090,6 +1112,7 @@ COMMANDS = {
     "ranking-preview": ("Read-only ranking preview with the proposed profile and weights; publishes and changes nothing", cmd_ranking_preview, _configure_ranking_preview),
     "import-manual": ("Import jobs you supplied by hand from local files (dry run by default; --apply backs up first)", cmd_import_manual, _configure_import_manual),
     "benchmark-eval": ("Read-only evaluation of the frozen Day 13 benchmark against stored data; imports nothing", cmd_benchmark_eval, _configure_benchmark_eval),
+    "source-health": ("Read-only health and completeness confidence of every source's newest collecting run", cmd_source_health, _configure_source_health),
     "identity-report": ("Read-only identity reconciliation report (duplicate evidence by tier); changes nothing", cmd_identity_report, _configure_identity_report),
     "investor-boards-report": ("Read-only report over saved investor-board snapshots", cmd_investor_boards_report, _configure_inv_report),
     "investor-boards-import": ("Import an investor-board snapshot after YOUR approval (dry-run by default)",

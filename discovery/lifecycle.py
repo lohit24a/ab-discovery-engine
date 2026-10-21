@@ -159,7 +159,7 @@ def latest_run_checks(conn, kind="any"):
     outcomes = ("success",) if kind == "any" else ("success", "partial")
     marks = ",".join("?" * len(outcomes))
     rows = conn.execute(f"""SELECT source_id, run_id, scope, started_at, complete, outcome FROM source_checks
-                            WHERE outcome IN ({marks}) ORDER BY started_at""", outcomes).fetchall()
+                            WHERE outcome IN ({marks}) ORDER BY started_at, rowid""", outcomes).fetchall()
     if kind == "jobs":
         rows = [r for r in rows if not (r["scope"] or "").startswith(("companies:", "companies/"))]
     newest = {}

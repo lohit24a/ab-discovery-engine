@@ -141,3 +141,29 @@ def url_signature(url):
                                 "identifier in last path segment", "", (), host)
     reason = "no path" if not segs else "path without a posting identifier"
     return UrlSignature("generic", ("url", host, "/".join(low), comparison_query(parts.query)), reason=reason, host=host)
+
+
+_WORKABLE_PATH = re.compile(r"^(?:/(?P<tenant>[A-Za-z0-9][A-Za-z0-9-]*))?/j/(?P<code>[A-Za-z0-9]{10})(?:/(?:apply)?)?$")
+_PATH_UUID = re.compile(r"(?<![0-9a-f-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f-])", re.I)
+
+
+def workable_shortcode(url):
+    """(tenant, CODE) for a Workable posting URL in either form, else None. tenant is '' for the tenant-less short link `apply.workable.com/j/<code>`.
+
+    COMPARISON HELPER ONLY: it never rewrites a URL and `url_signature` is unchanged. The 10-character shortcode looks globally unique (in the stored data
+    273 shortcodes, none seen under two tenants), but no vendor document establishes that, so a match between the two forms is a candidate for review, never a merge."""
+    parts = urlsplit((url or "").strip())
+    if host_of(url) != "apply.workable.com":
+        return None
+    m = _WORKABLE_PATH.match(parts.path.rstrip("/") or "/")
+    if not m:
+        return None
+    return (m.group("tenant") or "").lower(), m.group("code").upper()
+
+
+def path_uuid(url):
+    """(host, uuid) when a v4-style UUID appears in the URL path, else None. A UUID names one posting on the platform that issued it; the same UUID on a
+    different host (for example an employer careers page embedding an Ashby posting id) is strong but unscoped evidence, so it is only ever a review candidate."""
+    parts = urlsplit((url or "").strip())
+    m = _PATH_UUID.search(parts.path)
+    return (host_of(url), m.group(0).lower()) if m else None

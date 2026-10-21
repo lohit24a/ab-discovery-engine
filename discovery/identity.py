@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from .idkeys import (SHARED_ATS_DOMAINS, UrlSignature, host_class, host_of, registrable_domain,  # noqa: F401 (re-exported)
+from .idkeys import (SHARED_ATS_DOMAINS, UrlSignature, host_class, host_of, path_uuid, registrable_domain, workable_shortcode,  # noqa: F401 (re-exported)
                      url_signature)
 
 RULE_VERSION = "2026-10-21.2"
@@ -340,7 +340,66 @@ def job_pairs(refs, companies=None, rejected=None):
                     return Verdict("D", "same_requisition_conflicting_companies", ["one requisition is attributed to unrelated company names"],
                                    "different_label_same_posting")
                 add(a, b, key, sigs[ka], fn)
+    _cross_form_pairs(refs, rejected, add, sigs)
     return pairs
+
+
+def _cross_form_pairs(refs, rejected, add, sigs):
+    """Candidates the exact-key grouping cannot see because the SAME posting identifier is written two ways:
+    * Workable: `apply.workable.com/j/<code>` (no tenant) next to `apply.workable.com/<tenant>/j/<code>`;
+    * a UUID issued by an ATS embedded in another host's path (an employer careers page quoting the Ashby/Lever posting id).
+    Both are Tier B at best (a human confirms) because neither namespace is documented; a conflict (one code under two tenants, or unrelated
+    companies) is Tier D evidence that the identifier is not unique."""
+    wk = defaultdict(lambda: defaultdict(set))          # code -> tenant -> job ids
+    uu = defaultdict(lambda: defaultdict(set))          # uuid -> host -> job ids
+    for ref in refs.values():
+        for u in ref.urls:
+            w = workable_shortcode(u)
+            if w:
+                wk[w[1]][w[0]].add(ref.job_id)
+            x = path_uuid(u)
+            if x:
+                uu[x[1]][x[0]].add(ref.job_id)
+
+    def pair_up(groups_a, groups_b, key, reason, rule):
+        sig = UrlSignature("specific", key, "candidate", "", key[-1].lower(), reason, "posting", (), "")
+        for a_id in sorted(groups_a):
+            for b_id in sorted(groups_b):
+                if a_id == b_id:
+                    continue
+                a, b = refs[a_id], refs[b_id]
+                if a_id > b_id:
+                    a, b = b, a
+
+                def fn(rel, a=a, b=b):
+                    if rel not in ("same", "equivalent", "glued_suffix", "compatible"):
+                        return Verdict("D", "same_identifier_conflicting_companies", [reason, "the identifier is attributed to unrelated company names"], "different_label_same_posting")
+                    if title_key(a.title) != title_key(b.title):
+                        return Verdict("B", "same_identifier_different_titles", [reason, "different titles: a renamed posting or a non-unique identifier"])
+                    return Verdict("B", rule, [reason, "same company and identical title, but the identifier's namespace is not documented: a human should confirm"])
+                add(a, b, key, sig, fn)
+
+    for code, tenants in wk.items():
+        named = {t for t in tenants if t}
+        if len(named) > 1:                                                    # one code under two tenants: the identifier is NOT unique
+            ids = sorted({j for t in named for j in tenants[t]})
+            sig = UrlSignature("specific", ("workable-shortcode", code), "workable", "", code.lower(), "workable shortcode under several tenants", "posting", (), "")
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    a, b = refs[ids[i]], refs[ids[j]]
+                    add(a, b, ("workable-shortcode", code), sig, lambda rel: Verdict("D", "workable_shortcode_tenant_conflict",
+                                                                                     [f"shortcode {code} appears under tenants {sorted(named)}"], "identifier_not_unique"))
+            continue
+        if "" in tenants and named:
+            pair_up(tenants[""], {j for t in named for j in tenants[t]}, ("workable-shortcode", code),
+                    f"identical Workable shortcode {code}, written without and with the tenant ({sorted(named)[0]})", "workable_shortcode_tenantless_vs_tenant")
+    for uuid, hosts in uu.items():
+        if len(hosts) < 2:
+            continue
+        names = sorted(hosts)
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                pair_up(hosts[names[i]], hosts[names[j]], ("uuid", uuid), f"identical posting UUID {uuid} on {names[i]} and {names[j]}", "same_uuid_different_hosts")
 
 
 # --------------------------------------------------------------- companies

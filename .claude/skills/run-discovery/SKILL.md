@@ -19,6 +19,8 @@ Python does all repeatable data processing; you only operate the tested commands
 
 Run `.\.venv\Scripts\python.exe -m discovery doctor`. If it reports any FAIL, or a schema/database warning, stop and show the output. Do not run `init-db`, edit code or change the database to "fix" it; ask the user.
 
+Then run `.\.venv\Scripts\python.exe -m discovery source-health` (read-only) and show it. It states, per source, whether the newest collecting run was complete, filtered, partial, stale, blocked, failed or skipped, and how far it can be trusted. A partial, filtered, stale, failed or skipped source is **never** read as "those jobs are gone" and never closes anything. Investor boards, YC job pages and restricted boards are separate manual commands, so their `partial` or `filtered` states are expected here.
+
 ## 2. Sources
 
 Use the sources named in the arguments (`yc`, `feashliaa`, or `yc,feashliaa`). If none were given, ask which to run; do not assume. Nothing else is ever run. If the arguments contain `--dry-run`, do step 3 only and stop.
@@ -41,11 +43,13 @@ If the report lists pending TEST changes, show the counts and ask for explicit a
 
 ### Shortlist publication (optional, separate approval)
 
+Session rule: `sync --with-shortlist` only **continues the current review session** (the same records, re-checked against today's data and the sheet's verdicts; a record you rejected is dropped and not replaced). A **new** session (the next batch) starts only with `--new-session` and only when the user explicitly asks for the next batch. A dry run never records a session. Show the dry run first and name the session it would use.
+
 If the user asks for the ranked shortlist in the TEST sheet, run `.\.venv\Scripts\python.exe -m discovery sync --target test --dry-run --with-shortlist --plan-output exports/test_sync_plan.json`, show the counts and the exact rows/cells it lists, and say that the ranking settings are the operator's to approve. Write only after a clear yes to that specific plan, with `sync --target test --with-shortlist`. Only shortlisted records get new Posts/Companies rows; restricted sources are never listed; Verdict/Notes stay the user's. Manual imports (`import-manual`) are a separate user-invoked command, never part of this Skill, and `--apply` needs the user's own approval and schema 7.
 
 ## 7. Report and stop
 
-Run `.\.venv\Scripts\python.exe -m discovery report --last` and show it: sources attempted and their status, new/changed counts, integrity, TEST sync outcome, failed sources, skipped snapshots and pending actions. Then stop and wait for the user.
+Run `.\.venv\Scripts\python.exe -m discovery report --last` and `.\.venv\Scripts\python.exe -m discovery source-health` and show them: sources attempted and their status, new/changed counts, integrity, TEST sync outcome, failed sources, skipped snapshots, source health and confidence in completeness, and pending actions. Then stop and wait for the user.
 
 ## Restricted job boards are NOT part of this Skill
 

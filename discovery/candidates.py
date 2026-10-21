@@ -106,6 +106,17 @@ def _alias_location_evidence(conn):
     return out
 
 
+# Sources whose experience figure comes from the employer's own posting. Manual import is user-supplied; JobSpy extracts a number from aggregator text. Neither is
+# "reliable employer-provided" evidence for the precedence policy in filters.classify_experience.
+EMPLOYER_STATED_EXPERIENCE_SOURCES = ("yc_jobs",)
+
+
+def _cautious(a, b):
+    """Two readings of one job's level: the more cautious wins (senior, then entry/intern, then mid)."""
+    order = {"senior": 3, "entry": 2, "intern": 2, "mid": 1, None: 0}
+    return a if order.get(a, 0) >= order.get(b, 0) else b
+
+
 def _manual_texts(conn):
     """job_id -> {"text": latest user-supplied description or ''} for jobs that carry manual input (schema 7 only)."""
     if not identity.table_exists(conn, "manual_inputs"):
@@ -177,13 +188,16 @@ def load_candidates(conn, with_hints=True, upstream=None):
                 loc_evidence.append({"text": text, "sources": sorted(srcs)})
         attrs = {}
         if upstream:
-            for s_ in ss:
-                if s_["source_id"] == "feashliaa":
-                    attrs = upstream.get(db_normalize(s_["source_url"]), attrs)
+            for s_ in ss:                                       # any sighting whose URL a saved source file also describes (Feashliaa feed, investor boards)
+                got = upstream.get(db_normalize(s_["source_url"]))
+                if got:
+                    attrs = {"source_level": _cautious(attrs.get("source_level"), got.get("source_level")),
+                             "recruiter_posted": bool(attrs.get("recruiter_posted") or got.get("recruiter_posted"))}
         c = companies[r["company_id"]]
         c["n_jobs"] += 1
         jobs.append({"job_id": r["job_id"], "company_id": r["company_id"], "company_name": c["name"], "title": r["title"], "locations": locs,
                      "location_evidence": loc_evidence,
+                     "exp_reliable": r["experience_min_years"] is not None and any(x["source_id"] in EMPLOYER_STATED_EXPERIENCE_SOURCES for x in ss),
                      "exp_min": r["experience_min_years"], "exp_max": r["experience_max_years"], "exp_text": r["experience_text"],
                      "state": r["lifecycle_state"], "availability": best_class,
                      "availability_source": best_source, "scan_partial": bool(best_check and (best_check.get("partial") or not best_check.get("complete"))),

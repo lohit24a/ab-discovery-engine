@@ -257,8 +257,13 @@ def _compile_experience(profile):
     return cache
 
 
-def classify_experience(title, profile, min_years=None, max_years=None, text=None):
-    """Early-career / senior evidence. Absent evidence is 'unknown', never 'senior'."""
+def classify_experience(title, profile, min_years=None, max_years=None, text=None, employer_stated=False):
+    """Early-career / senior evidence. Absent evidence is 'unknown', never 'senior'.
+
+    PRECEDENCE POLICY (operator-approved, Day 14): a reliable, explicit, EMPLOYER-provided minimum (`employer_stated=True`, which the candidate builder sets only
+    for sources that parse the employer's own posting, never for user-supplied hints or aggregator labels) outranks seniority inferred solely from a senior TITLE
+    term ('Lead', 'Senior', ...). The conflict stays visible (EXP_TITLE_CONFLICT and a sentence in the detail). A stated minimum is not proof that a role is junior,
+    so leadership duties are not assessed here; executive titles are not overridden; missing evidence stays 'unknown'."""
     rx = _compile_experience(profile)
     e = profile.raw["experience"]
     flags, detail = [], []
@@ -287,10 +292,15 @@ def classify_experience(title, profile, min_years=None, max_years=None, text=Non
         flags.append("TITLE_EXECUTIVE")
         detail.append("executive title term: " + ", ".join(exec_hits))
     elif senior_hits:
-        if category in ("unknown", "early_career", "mid"):
-            category = "senior"
-        flags.append("TITLE_SENIOR")
-        detail.append("senior title term: " + ", ".join(senior_hits))
+        if employer_stated and min_years is not None and min_years < e["senior_min_years"]:
+            flags += ["TITLE_SENIOR_OVERRIDDEN", "EXP_TITLE_CONFLICT"]
+            detail.append(f"title says '{', '.join(senior_hits)}' but the employer states a minimum of {min_years:g} years: the employer's figure takes precedence "
+                          "(a stated minimum is not proof the role is junior, and leadership duties are not assessed)")
+        else:
+            if category in ("unknown", "early_career", "mid"):
+                category = "senior"
+            flags.append("TITLE_SENIOR")
+            detail.append("senior title term: " + ", ".join(senior_hits))
     if early_title and not (exec_hits or senior_hits):
         flags.append("TITLE_JUNIOR")
         detail.append("early-career title term: " + ", ".join(early_title))

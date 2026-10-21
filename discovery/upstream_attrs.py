@@ -39,3 +39,52 @@ def load_feashliaa_attributes(conn, cache_dir=CACHE_DIR):
                     level = r.get("skill_level")
                     out[key] = {"source_level": level if level in LEVELS else None, "recruiter_posted": str(r.get("is_recruiter")).lower() == "true"}
     return out
+
+
+BOARD_DIR = db.PROJECT_ROOT / "data" / "investor_boards"
+GETRO_LEVEL = {"internship": "intern", "entry_level": "entry", "associate": "entry", "mid_senior": "mid", "senior": "senior",
+               "director": "senior", "vice_president": "senior", "cxo": "senior"}
+
+
+def load_board_attributes(board_dir=BOARD_DIR):
+    """{normalised employer/listing URL: {"source_level": ...}} from the NEWEST saved snapshot of each investor board (offline, read-only).
+
+    Getro reports a coarse `seniority` for most Bengaluru listings; the importer keeps title, location and dates but not this field. It is a machine-derived
+    label from the board, not an employer statement, and 'mid_senior' is deliberately NOT turned into a signal. Returns {} when no snapshot exists."""
+    root = Path(board_dir)
+    if not root.is_dir():
+        return {}
+    newest = {}
+    for fn in sorted(root.glob("*.json")):
+        try:
+            data = json.loads(fn.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for b in data.get("boards", []):
+            scope = (b.get("scopes") or {}).get("jobs")
+            if scope and scope.get("records"):
+                newest[b["key"]] = scope["records"]
+    out = {}
+    for records in newest.values():
+        for r in records:
+            level = GETRO_LEVEL.get((r.get("seniority") or "").lower())
+            url = r.get("apply_url") or r.get("url")
+            if level and url:
+                out.setdefault(db.normalize_url(url), {"source_level": level, "recruiter_posted": False})
+    return out
+
+
+def merge(*sources):
+    """Combine attribute maps. Where two sources disagree the more cautious reading wins (senior over anything, then entry)."""
+    order = {"senior": 3, "entry": 2, "intern": 2, "mid": 1, None: 0}
+    out = {}
+    for src in sources:
+        for url, attrs in (src or {}).items():
+            cur = out.get(url)
+            if cur is None:
+                out[url] = dict(attrs)
+            else:
+                if order.get(attrs.get("source_level"), 0) > order.get(cur.get("source_level"), 0):
+                    cur["source_level"] = attrs["source_level"]
+                cur["recruiter_posted"] = bool(cur.get("recruiter_posted") or attrs.get("recruiter_posted"))
+    return out

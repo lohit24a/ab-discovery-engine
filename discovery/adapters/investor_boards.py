@@ -373,6 +373,16 @@ class _Walk:
         self.seen_ids, self.seen_pages, self.seen_cursors = set(), set(), set()
         self.exhausted = False
         self.fatal = False
+        self.total_changed = False
+
+    def note_total(self, total):
+        """The board's reported total. If it changes while we walk, the result set moved under us (records added or removed between pages), so
+        the retrieved set cannot be called a whole: the scan stays partial however well the final count matches."""
+        r = self.res
+        if r.reported_total is not None and total != r.reported_total and not self.total_changed:
+            self.total_changed = True
+            r.anomalies.append(f"reported total changed during the scan ({r.reported_total} -> {total}): the result set moved while it was being read")
+        r.reported_total = total
 
     def request(self, req):
         r = self.res
@@ -419,7 +429,9 @@ class _Walk:
         distinct = len(r.records)
         total = r.reported_total
         if self.exhausted and not self.fatal and r.error is None:
-            if total is not None and distinct != total:
+            if self.total_changed:
+                r.status = "partial"
+            elif total is not None and distinct != total:
                 r.anomalies.append(f"count mismatch: board reports {total}, retrieved {distinct}")
                 r.status = "partial"
             else:
@@ -481,7 +493,7 @@ def scan_consider(board, http, sleep=time.sleep, clock=time.monotonic, location=
             res.error, res.stopped, walk.fatal = f"unexpected response ({str((data or {}).get('error') or (data or {}).get('errors') or 'shape')[:60]})", "schema", True
             break
         if isinstance(data.get("total"), int) and not isinstance(data.get("total"), bool):
-            res.reported_total = data["total"]
+            walk.note_total(data["total"])
         items = [j for j in (normalize_consider_job(x, board) for x in data["jobs"]) if j]
         if len(items) < len(data["jobs"]):
             res.anomalies.append(f"{len(data['jobs']) - len(items)} job(s) on a page were unusable and skipped")
@@ -531,7 +543,7 @@ def scan_getro(board, http, scope, sleep=time.sleep, clock=time.monotonic):
             break
         total = section.get("total")
         if isinstance(total, int) and not isinstance(total, bool):
-            res.reported_total = total
+            walk.note_total(total)
         items = [x for x in (norm(i, board) for i in found) if x]
         if len(items) < len(found):
             res.anomalies.append(f"{len(found) - len(items)} {key} entr(ies) on page {n} unusable and skipped")
@@ -603,7 +615,7 @@ def scan_getro_api(board, http, scope, sleep=time.sleep, clock=time.monotonic, l
             break
         count = results.get("count")
         if isinstance(count, int) and not isinstance(count, bool):
-            res.reported_total = count
+            walk.note_total(count)
         items = [x for x in (norm(i, board) for i in found) if x]
         if len(items) < len(found):
             res.anomalies.append(f"{len(found) - len(items)} {key} entr(ies) on page {page_no} unusable and skipped")

@@ -500,3 +500,57 @@ def test_reverse_merge_restores_sightings_jobs_verdict_and_domain(conn):
     assert conn.execute("SELECT COUNT(*) FROM identity_links WHERE status = 'possible'").fetchone()[0] == 2
     merge.apply_company_merge(conn, c1, c2, rule="r", evidence={}, decided_by="t")        # can be merged again later
     assert identity.alias_ids(conn, "company") == {c2}
+
+
+# ---------------------------------------------- Day 14: the same identifier written two ways (candidates only, never merges)
+
+WK_BARE = "https://apply.workable.com/j/E75B63B3A7"
+WK_TENANT = "https://apply.workable.com/apna/j/E75B63B3A7/apply"
+
+
+def test_workable_shortcode_helper_reads_both_forms_and_nothing_else():
+    from discovery.idkeys import path_uuid, workable_shortcode
+    assert workable_shortcode(WK_BARE) == ("", "E75B63B3A7") and workable_shortcode(WK_TENANT) == ("apna", "E75B63B3A7")
+    assert workable_shortcode("https://apply.workable.com/apna/") is None and workable_shortcode("https://jobs.lever.co/apna/j/E75B63B3A7") is None
+    assert workable_shortcode("https://apply.workable.com/j/short") is None
+    u = "6d860f5a-6a76-4c89-9f3e-0123456789ab"
+    assert path_uuid(f"https://sarvam.ai/careers/jobs/{u}") == ("sarvam.ai", u) and path_uuid("https://x.example/jobs/12345") is None
+
+
+def test_tenantless_and_tenant_workable_urls_become_a_review_candidate_not_a_merge(conn):
+    two_sources(conn)
+    a = job(conn, company(conn, "Apna"), "Product Operations Associate", "feed", WK_BARE, ext="a").job_id
+    b = job(conn, company(conn, "apna"), "Product Operations Associate", "board", WK_TENANT, ext="b").job_id
+    assert tiers(conn) == {("B", "workable_shortcode_tenantless_vs_tenant")}
+    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 2 and a != b and conn.execute("SELECT COUNT(*) FROM identity_links").fetchone()[0] == 0
+
+
+def test_one_shortcode_under_two_tenants_is_a_conflict_not_a_match(conn):
+    two_sources(conn)
+    job(conn, company(conn, "Apna"), "Product Operations Associate", "feed", "https://apply.workable.com/apna/j/E75B63B3A7", ext="a")
+    job(conn, company(conn, "Other Corp"), "Product Operations Associate", "board", "https://apply.workable.com/othercorp/j/E75B63B3A7", ext="b")
+    got = tiers(conn)
+    assert {t for t, _ in got} == {"D"} and any(r == "workable_shortcode_tenant_conflict" for _, r in got)
+
+
+def test_same_shortcode_at_unrelated_companies_or_with_other_titles_never_reaches_tier_a(conn):
+    two_sources(conn)
+    job(conn, company(conn, "Apna"), "Product Operations Associate", "feed", WK_BARE, ext="a")
+    job(conn, company(conn, "Zeta Holdings"), "Product Operations Associate", "board", WK_TENANT, ext="b")
+    assert {t for t, _ in tiers(conn)} == {"D"}
+
+
+def test_same_shortcode_different_title_is_possible_only(conn):
+    two_sources(conn)
+    job(conn, company(conn, "Apna"), "Product Operations Associate", "feed", WK_BARE, ext="a")
+    job(conn, company(conn, "apna"), "Product Analyst", "board", WK_TENANT, ext="b")
+    assert tiers(conn) == {("B", "same_identifier_different_titles")}
+
+
+def test_ats_uuid_quoted_on_an_employer_careers_page_is_a_candidate(conn):
+    two_sources(conn)
+    u = "48c228f1-0762-4d4e-9d83-ae8f751ce19d"
+    job(conn, company(conn, "Sarvam AI"), "Deployment Strategist", "feed", f"https://jobs.ashbyhq.com/sarvam/{u}", ext="a")
+    job(conn, company(conn, "Sarvam AI"), "Deployment Strategist", "board", f"https://www.sarvam.ai/careers/jobs/{u}", ext="b")
+    assert ("B", "same_uuid_different_hosts") in tiers(conn)
+    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 2

@@ -63,8 +63,8 @@ def fetch_json(url, *, timeout=60, retries=3, sleep=time.sleep, opener=urllib.re
             return json.loads(body.decode("utf-8"))  # data only; nothing from it is ever executed
         except urllib.error.HTTPError as exc:
             last = exc
-            if exc.code < 500 and exc.code != 429:
-                raise SourceError(f"{url}: HTTP {exc.code}") from exc
+            if exc.code < 500:                  # 4xx (including 403 and 429) is a refusal or rate limit: stop, never retry
+                raise SourceError(f"{url}: HTTP {exc.code}" + (" (rate limited; not retried)" if exc.code == 429 else "")) from exc
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             last = exc
         except (ValueError, UnicodeDecodeError) as exc:

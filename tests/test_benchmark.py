@@ -150,7 +150,7 @@ def test_employer_absent_everywhere_is_reported_as_an_upstream_coverage_gap(conn
 def test_hypothetical_ranking_uses_only_the_fixture_and_flags_missing_role_signals(conn, cfg):
     res, _, _ = run(conn, cfg, [rec("A01", title="Forward Deployment Engineer"), rec("A02", title="Associate Product Manager", url="https://x.example/2", ats="none"),
                                 rec("N01", title="Senior Full Stack Engineer - Frontend Focused", url="https://x.example/3", ats="none", group=bm.GROUP_NEGATIVE)])
-    assert res["A01"]["hypothetical_outcome"] == "low_priority" and res["A01"]["hypothetical_family"] is None          # "Deployment" is not an alias of "Deployed"
+    assert res["A01"]["hypothetical_outcome"] == "needs_review" and res["A01"]["hypothetical_family"] == "forward_deployed_solutions"     # approved weak alias (Day 14)
     assert res["A02"]["hypothetical_outcome"] == "confirmed_eligible"
     assert res["N01"]["hypothetical_outcome"].startswith("excluded")                                                   # a negative control never reaches the shortlist
 
@@ -227,3 +227,35 @@ def test_frozen_fixture_is_intact_complete_and_not_in_the_database(cfg):
     assert all(r["original_url"].startswith("https://") for r in rows) and all(r["source_observation_date"] == "2026-10-21" for r in rows)
     with pytest.raises(ValueError):
         bm.load_fixture(FIXTURE, expected_sha256="0" * 64)
+
+
+# ------------------------------------------------------------- Day 14: stronger evidence, same labels
+
+def test_tenantless_workable_url_vs_tenant_form_is_probable_with_strong_identifier_evidence(conn, cfg):
+    add(conn, "Apna", "Product Operations Associate", "https://apply.workable.com/j/E75B63B3A7")
+    r = rec(employer="Apna", title="Product Operations Associate", url="https://standout.work/jobs/x", ats="workable:apna:E75B63B3A7",
+            direct_employer_or_ats_url="https://apply.workable.com/apna/j/E75B63B3A7/apply (as quoted by the mirror)")
+    res, m, _ = run(conn, cfg, [r])
+    got = res["A01"]
+    assert got["match_class"] == "probable_review" and got["match_strength"] == "strong_identifier_unscoped" and "Workable shortcode E75B63B3A7" in got["match_evidence"][0]
+    assert m["confirmed_exact"]["count"] == 0 and m["probable_review"]["by_strength"] == {"A01": "strong_identifier_unscoped"}      # still not counted as found
+
+
+def test_ats_uuid_quoted_on_an_employer_page_is_strong_but_unscoped(conn, cfg):
+    u = "48c228f1-0762-4d4e-9d83-ae8f751ce19d"
+    add(conn, "Sarvam AI", "Deployment Strategist", f"https://jobs.ashbyhq.com/sarvam/{u}")
+    r = rec(employer="Sarvam AI", title="Deployment Strategist", url=f"https://www.sarvam.ai/careers/jobs/{u}", ats="sarvam-careers:" + u, direct_employer_or_ats_url="same")
+    got = run(conn, cfg, [r])[0]["A01"]
+    assert got["match_class"] == "probable_review" and got["match_strength"] == "strong_identifier_unscoped" and "posting UUID" in got["match_evidence"][0]
+
+
+def test_the_same_identifier_at_another_employer_is_not_even_probable(conn, cfg):
+    add(conn, "Other Corp", "Product Operations Associate", "https://apply.workable.com/j/E75B63B3A7")
+    r = rec(employer="Apna", title="Product Operations Associate", url="https://standout.work/jobs/x", ats="workable:apna:E75B63B3A7",
+            direct_employer_or_ats_url="https://apply.workable.com/apna/j/E75B63B3A7/apply")
+    assert run(conn, cfg, [r])[0]["A01"]["match_class"] == "no_match"
+
+
+def test_title_only_probable_matches_are_labelled_as_the_weakest_kind(conn, cfg):
+    add(conn, "Acme", "Associate Product Manager", "https://job-boards.greenhouse.io/acme/jobs/999000")
+    assert run(conn, cfg, [rec()])[0]["A01"]["match_strength"] == "employer_and_title_only"

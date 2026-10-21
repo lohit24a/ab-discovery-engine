@@ -132,7 +132,7 @@ def score_job(c, profile, ranking, as_of):
     ctext = c.get("company_text") or ""
     role = match_roles(c["title"], profile, ctext, c.get("description", ""))
     exp = classify_experience(c["title"], profile, c.get("exp_min"), c.get("exp_max"),
-                              " ".join(x for x in (c.get("exp_text"), c.get("description")) if x) or None)
+                              " ".join(x for x in (c.get("exp_text"), c.get("description")) if x) or None, employer_stated=bool(c.get("exp_reliable")))
     screen = screen_title(c["title"], profile) if not role.has_signal else None
     when, date_codes = posting_date(c, ranking)
     excl = []
@@ -252,7 +252,11 @@ def score_job(c, profile, ranking, as_of):
     if senior_signal:
         review.append(f"{exp.category} experience signal in the title/requirements")
     level = c.get("source_level")
-    if level and ex["source_reported_level_treatment"] == "use":
+    employer_years = c.get("exp_min") if c.get("exp_reliable") else None
+    if level and employer_years is not None:                       # a noisy aggregator label never overrides the employer's own figure; the disagreement stays visible
+        codes.append("SRC_LEVEL_IGNORED_EMPLOYER_EXPERIENCE_STATED")
+        facts.append(f"the source labels the level '{level}' but the employer states a minimum of {employer_years:g} years, which takes precedence")
+    elif level and ex["source_reported_level_treatment"] == "use":
         if level == "senior":
             comp["source_reported_level"] = E["source_reported_senior_penalty"]
             senior_signal = True
@@ -304,8 +308,9 @@ def score_job(c, profile, ranking, as_of):
         facts.append("posting age unknown" + (" (the aggregator's first-seen date is not a posting date)" if "DATE_AGGREGATOR_FIRST_SEEN_NO_BONUS" in codes else ""))
 
     Sq = W["source_quality"]
-    comp["source_quality"] = max((Sq.get(t, Sq["other"]) for t in c.get("source_types", ["other"])), default=0)
-    codes += ["SRC_" + t.upper() for t in c.get("source_types", [])]
+    types = c.get("source_types", ["other"])
+    comp["source_quality"] = max((Sq.get(t, Sq["other"]) for t in types if t != "investor_board"), default=0)      # independent sourcing only
+    codes += ["SRC_" + t.upper() for t in types]
 
     C = W["company"]
     matches = sector_matches(ctext, profile)
@@ -317,9 +322,16 @@ def score_job(c, profile, ranking, as_of):
     if cev.get("yc"):
         comp["company_yc"] = C["yc_company"]
         codes.append("CO_YC")
-    if cev.get("investor_boards"):
-        comp["company_investor_listed"] = C["investor_board_listed"]
-        codes.append("CO_INVESTOR_LISTED")
+    boards = cev.get("investor_boards") or []
+    sighted_on_board = "investor_board" in types
+    membership = C["investor_board_listed"] * len(boards) + (Sq["investor_board"] if sighted_on_board else 0)
+    if boards or sighted_on_board:
+        comp["investor_membership"] = min(C["investor_membership_cap"], membership)
+        if boards:
+            codes.append("CO_INVESTOR_LISTED")
+        if membership > C["investor_membership_cap"]:
+            codes.append("INVESTOR_MEMBERSHIP_CAPPED")
+            facts.append(f"investor-board membership is worth at most {C['investor_membership_cap']} points per job (the cap, however many boards carry it)")
     if startup_terms(ctext, profile) or cev.get("yc"):
         comp["company_startup"] = C["startup_signal"]
     if c.get("also_company_candidate"):

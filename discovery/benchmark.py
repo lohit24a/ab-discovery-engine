@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import candidates as cm
 from . import identity, imports
-from .idkeys import url_signature
+from .idkeys import path_uuid, url_signature, workable_shortcode
 
 GROUP_POSITIVE, GROUP_SENIOR, GROUP_NEGATIVE = "A_positive", "B_family_match_but_senior", "N_negative_control"
 SOURCE_FAMILY = {"feashliaa": "ats_feed", "yc_jobs": "yc_jobs", "yc_oss": "yc_directory", "jobspy_indeed": "jobspy", "jobspy_naukri": "jobspy",
@@ -76,6 +76,7 @@ class Inventory:
         self.conn = conn
         self.alias_to_canonical = {r[0]: r[1] for r in conn.execute("SELECT alias_id, canonical_id FROM identity_links WHERE entity_type='job' AND status='confirmed'")}
         self.by_key, self.by_loose, self.by_employer = defaultdict(set), defaultdict(set), defaultdict(set)
+        self.by_workable, self.by_uuid = defaultdict(set), defaultdict(set)
         self.sightings = defaultdict(list)
         self.job = {}
         for j in conn.execute("""SELECT j.job_id, j.title, j.location, j.company_id, c.name AS company, c.aliases, c.facts FROM jobs j JOIN companies c USING (company_id)"""):
@@ -87,6 +88,11 @@ class Inventory:
             if sig.kind == "specific":
                 self.by_key[sig.key].add(jid)
                 self.by_loose[(sig.platform, sig.job_key)].add(jid)
+            w, u = workable_shortcode(s["source_url"]), path_uuid(s["source_url"])
+            if w:
+                self.by_workable[w[1]].add(jid)
+            if u:
+                self.by_uuid[u[1]].add(jid)
         self.company_jobs = defaultdict(set)
         self.company_names = {}
         for jid, j in self.job.items():
@@ -162,10 +168,10 @@ def match(inv, rec):
         exact |= inv.by_key.get(k, set())
     if len(exact) == 1:
         hit = next((k for k in keys if inv.by_key.get(k)), None)
-        return {"match_class": "confirmed_exact", "canonical_ids": sorted(exact),
+        return {"match_class": "confirmed_exact", "match_strength": "scoped_ats_key", "canonical_ids": sorted(exact),
                 "evidence": ["job-specific ATS key equal (platform + tenant + posting id): " + ":".join(map(str, hit or ()))]}
     if len(exact) > 1:
-        return {"match_class": "probable_review", "canonical_ids": sorted(exact), "evidence": ["the job-specific key names several canonical jobs (ambiguous); left separate"]}
+        return {"match_class": "probable_review", "match_strength": "ambiguous_key", "canonical_ids": sorted(exact), "evidence": ["the job-specific key names several canonical jobs (ambiguous); left separate"]}
     employer = _employer_hits(inv, rec)
     ev, cand = [], set()
     for lk in loose:
@@ -174,7 +180,18 @@ def match(inv, rec):
             cand |= same_id & employer
             ev.append(f"same {lk[0]} posting id {lk[1]} at the same employer, but the stored URL has a different or missing tenant form")
     if cand:
-        return {"match_class": "probable_review", "canonical_ids": sorted(cand), "evidence": ev}
+        return {"match_class": "probable_review", "match_strength": "same_posting_id_other_tenant_form", "canonical_ids": sorted(cand), "evidence": ev}
+    strong, sev = set(), []
+    for url in ((rec.get("direct_employer_or_ats_url", "") or "").split(" ")[0], rec.get("original_url", "")):
+        w, u = workable_shortcode(url), path_uuid(url)
+        if w and inv.by_workable.get(w[1], set()) & employer:
+            strong |= inv.by_workable[w[1]] & employer
+            sev.append(f"identical Workable shortcode {w[1]} (fixture {'tenant ' + w[0] if w[0] else 'tenant-less'}); the stored URL uses the other form, so the key cannot be compared directly")
+        if u and inv.by_uuid.get(u[1], set()) & employer:
+            strong |= inv.by_uuid[u[1]] & employer
+            sev.append(f"identical posting UUID {u[1]} at a different host ({u[0]}); the UUID is globally unique but its namespace is not documented")
+    if strong:
+        return {"match_class": "probable_review", "match_strength": "strong_identifier_unscoped", "canonical_ids": sorted(strong), "evidence": sev + ["employer agrees; a person should confirm"]}
     tk = identity.title_key(rec["exact_title"])
     same_title = {j for j in employer if identity.title_key(inv.job[j]["title"]) == tk}
     if same_title:
@@ -182,10 +199,10 @@ def match(inv, rec):
         ats = _split_ats(rec.get("stable_ats_identifier"))
         if ats and any(ats[2] in s["source_url"].lower() for j in same_title for s in inv.sightings.get(j, [])):
             ev.append(f"the posting id {ats[2]} appears in a stored URL, but that URL form has no {ats[0]} tenant to compare, so it stays probable")
-        return {"match_class": "probable_review", "canonical_ids": sorted(same_title), "evidence": ev}
+        return {"match_class": "probable_review", "match_strength": "employer_and_title_only", "canonical_ids": sorted(same_title), "evidence": ev}
     if not keys and not loose:
-        return {"match_class": "unverifiable_identity", "canonical_ids": [], "evidence": ["the record carries no job-specific identifier, so absence cannot be proven"]}
-    return {"match_class": "no_match", "canonical_ids": [], "evidence": ["no stored job shares the job-specific key, and no same-employer job has this title"]}
+        return {"match_class": "unverifiable_identity", "match_strength": "none", "canonical_ids": [], "evidence": ["the record carries no job-specific identifier, so absence cannot be proven"]}
+    return {"match_class": "no_match", "match_strength": "none", "canonical_ids": [], "evidence": ["no stored job shares the job-specific key, and no same-employer job has this title"]}
 
 
 def discovery_facts(inv, rec, ids, fixture_created_utc, checks, sources):
@@ -357,7 +374,7 @@ def evaluate(conn, rows, profile, ranking, fixture_created_utc, frozen_checks=No
         ats = _split_ats(rec.get("stable_ats_identifier"))
         row = {
             "benchmark_id": rec["benchmark_id"], "group": rec["group"], "employer": rec["employer"], "exact_title": rec["exact_title"],
-            "match_class": m["match_class"], "canonical_job_ids": ";".join(m["canonical_ids"]), "match_evidence": m["evidence"],
+            "match_class": m["match_class"], "match_strength": m["match_strength"], "canonical_job_ids": ";".join(m["canonical_ids"]), "match_evidence": m["evidence"],
             "automatic_sources": ";".join(facts["sources"]), "automatic_discovery": bool(facts["sources"]) and m["match_class"] == "confirmed_exact",
             "manual_sources": ";".join(facts["manual_sources"]), "source_families": ";".join(sorted({source_family(s) for s in facts["sources"]})),
             "first_observed_by_engine": facts["first_observed"], "in_database_before_benchmark": facts["pre_existing"],
@@ -412,7 +429,8 @@ def metrics(rows):
     return {
         "denominator_positive": n,
         "confirmed_exact": {"count": len(conf), "pct": pct(len(conf)), "ids": [r["benchmark_id"] for r in conf]},
-        "probable_review": {"count": len(prob), "pct": pct(len(prob)), "ids": [r["benchmark_id"] for r in prob]},
+        "probable_review": {"count": len(prob), "pct": pct(len(prob)), "ids": [r["benchmark_id"] for r in prob],
+                            "by_strength": {r["benchmark_id"]: r["match_strength"] for r in prob}},
         "no_match": {"count": len(none), "pct": pct(len(none)), "ids": [r["benchmark_id"] for r in none]},
         "unverifiable_identity": {"count": len(unv), "ids": [r["benchmark_id"] for r in unv]},
         "matched_only_through_manual_entries": {"count": len(manual_only_match), "ids": [r["benchmark_id"] for r in manual_only_match]},
@@ -445,7 +463,7 @@ def _count(values):
 
 
 def write_results_csv(rows, path):
-    cols = ["benchmark_id", "group", "employer", "exact_title", "match_class", "canonical_job_ids", "match_evidence", "automatic_discovery", "automatic_sources", "manual_sources", "source_families",
+    cols = ["benchmark_id", "group", "employer", "exact_title", "match_class", "match_strength", "canonical_job_ids", "match_evidence", "automatic_discovery", "automatic_sources", "manual_sources", "source_families",
             "first_observed_by_engine", "in_database_before_benchmark", "employer_sources", "collection_notes", "actual_outcome", "actual_score", "actual_family",
             "actual_location_class", "actual_experience", "actual_reason_codes", "actual_availability", "in_clean_top20", "in_current_session", "in_next_session_top20",
             "hypothetical_outcome", "hypothetical_score", "hypothetical_family", "hypothetical_location_class", "hypothetical_experience", "hypothetical_reasons",
