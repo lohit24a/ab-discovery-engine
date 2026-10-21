@@ -34,7 +34,7 @@ from pathlib import Path
 from . import database as db
 from . import identity, lifecycle
 from .sheets_schema import (HUMAN, KEY, KEY_COLUMN, MACHINE, NOTES_COLUMN, TAB_COLUMNS, TAB_ORDER,
-                            VERDICT_COLUMN, VERDICT_VALUES, column_names)
+                            VERDICT_COLUMN, VERDICT_VALUES, column_names, safe_cell)
 
 WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 LIVE_BLOCKED = "LIVE synchronization is not enabled; only --target test is allowed"
@@ -60,16 +60,35 @@ class SyncReport:
     headers_written: list = field(default_factory=list)
     stages_completed: list = field(default_factory=list)
     run_id: str = ""
+    planned: dict = field(default_factory=dict)         # tab -> {"appends": [...], "updates": [...]} exact planned changes
+    session_note: str = ""
 
     def lines(self):
         out = [f"{'DRY RUN - no changes were made' if self.dry_run else 'Sync complete'}"
                f" | spreadsheet: {self.spreadsheet}"]
         if self.run_id:
             out.append(f"Run ID: {self.run_id}")
+        if self.session_note:
+            out.append(self.session_note)
         out.append(f"Headers to write: {', '.join(self.headers_written) or 'none'}")
         for tab in TAB_ORDER:
             out.append(f"{tab}: {self.appended.get(tab, 0)} row(s) to add, "
                        f"{self.cells_updated.get(tab, 0)} machine cell(s) to update")
+            detail = self.planned.get(tab) or {}
+            reasons = {}
+            for a in detail.get("appends", []):
+                reasons[a.get("admitted_by", "?")] = reasons.get(a.get("admitted_by", "?"), 0) + 1
+            if reasons:
+                out.append("    rows added, by the rule that admits them: " + ", ".join(f"{k} {v}" for k, v in sorted(reasons.items())))
+            cols = {}
+            for u in detail.get("updates", []):
+                cols[u["column"]] = cols.get(u["column"], 0) + 1
+            if cols:
+                out.append("    cells updated by column: " + ", ".join(f"{k} {v}" for k, v in sorted(cols.items())))
+            cleared = sum(1 for u in detail.get("updates", []) if u["new"] == "" and u["old"] != "")
+            if cleared:
+                out.append(f"    cells cleared (record left the generated view): {cleared}")
+        out.append("Rows deleted: 0 (the sync never deletes a row; nothing the person typed is removed)")
         out.append(f"Machine cells kept because the new value was blank: {self.kept_nonblank}")
         out.append(f"Verdicts/notes imported into SQLite: {len(self.verdicts_imported)}")
         out.extend(f"  - {x}" for x in self.verdicts_imported)
@@ -335,7 +354,7 @@ def load_company_rows(conn):
 # Jobs seen by these sources are never appended to the review sheet until relevance and freshness rules are approved
 # (YC job pages show years-old listings; restricted JobSpy boards are never published). Existing rows and human
 # verdicts are unaffected. Investor-board sources (ids starting inv_) are held back as well.
-UNPUBLISHED_JOB_SOURCES = ("yc_jobs", "jobspy_indeed", "jobspy_naukri", "jobspy_linkedin")
+UNPUBLISHED_JOB_SOURCES = ("yc_jobs", "manual", "jobspy_indeed", "jobspy_naukri", "jobspy_linkedin")
 
 
 def load_publishable_company_ids(conn):
@@ -466,6 +485,7 @@ class TabPlan:
     header_cells: dict = field(default_factory=dict)
     appends: list = field(default_factory=list)
     updates: dict = field(default_factory=dict)
+    detail: dict = field(default_factory=lambda: {"appends": [], "updates": []})   # exactly what changes (for the dry-run plan)
 
 
 def _row_for(state, record_id, machine, human):
@@ -477,7 +497,7 @@ def _row_for(state, record_id, machine, human):
     return cells
 
 
-def _plan_keyed_tab(state, found, data, human_for, report, tab_label, appendable=None):
+def _plan_keyed_tab(state, found, data, human_for, report, tab_label, appendable=None, admitted_by=None):
     """Plan header, updates and appended rows for Posts / Companies / Runs.
 
     appendable: optional set of record ids allowed to receive a NEW row (rows already in the sheet are
@@ -489,6 +509,7 @@ def _plan_keyed_tab(state, found, data, human_for, report, tab_label, appendable
         report.headers_written.append(state.tab)
     machine_cols = [c.name for c in TAB_COLUMNS[state.tab] if c.owner == MACHINE]
     for rid, values in data.items():
+        values = {k: safe_cell(v) for k, v in values.items()}
         if rid in found:
             row_num, cells = found[rid]
             for name in machine_cols:
@@ -498,9 +519,13 @@ def _plan_keyed_tab(state, found, data, human_for, report, tab_label, appendable
                 if new == "" and old.strip():
                     report.kept_nonblank += 1
                     continue
-                plan.updates[f"{col_letter(state.col[name])}{row_num}"] = new
+                a1 = f"{col_letter(state.col[name])}{row_num}"
+                plan.updates[a1] = new
+                plan.detail["updates"].append({"cell": a1, "record_id": rid, "column": name, "old": old, "new": new})
         elif appendable is None or rid in appendable:
             plan.appends.append(_row_for(state, rid, values, human_for(rid, restore_only=True)))
+            plan.detail["appends"].append({"record_id": rid, "summary": " | ".join(values.get(n, "")[:60] for n in ("Company", "Job Title") if values.get(n)),
+                                           "admitted_by": (admitted_by or {}).get(rid, "publication_gate")})
     report.appended[state.tab] = len(plan.appends)
     report.cells_updated[state.tab] = len(plan.updates)
     return plan
@@ -518,9 +543,12 @@ def _plan_shortlist(state, rows, report):
         desired = rows[i] if i < len(rows) else {}
         cells = existing.get(row_num, [""] * state.width)
         for n in names:
-            new, old = _s(desired.get(n)), cells[state.col[n]]
+            new, old = safe_cell(desired.get(n)), cells[state.col[n]]
             if new != old:
-                plan.updates[f"{col_letter(state.col[n])}{row_num}"] = new
+                a1 = f"{col_letter(state.col[n])}{row_num}"
+                plan.updates[a1] = new
+                plan.detail["updates"].append({"cell": a1, "record_id": _s(desired.get("record_id")) or cells[state.col["record_id"]],
+                                               "column": n, "old": old, "new": new})
     report.cells_updated["Shortlist"] = len(plan.updates)
     report.appended["Shortlist"] = 0
     return plan
@@ -531,8 +559,12 @@ def _last_sync(conn):
     return row[0]
 
 
-def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
-    """Synchronize SQLite and the (TEST) spreadsheet. Returns a SyncReport; raises SyncError if unsafe."""
+def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
+    """Synchronize SQLite and the (TEST) spreadsheet. Returns a SyncReport; raises SyncError if unsafe.
+
+    shortlist: optional shortlist.Shortlist (or a callable taking {record_id: verdict read from the sheet}). When given, the Shortlist tab is generated from it, Score/Explanation are filled for
+    ranked records, and ONLY its selected records may receive new Posts/Companies rows beyond the normal publication gate
+    (restricted sources are never selected). The human Verdict/Notes columns are untouched by any of it."""
     now = now or db.utc_now()
     report = SyncReport(dry_run=dry_run, spreadsheet=backend.title)
 
@@ -587,14 +619,38 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
                 report.verdicts_restored.append(
                     f"{'Job' if tab == 'Posts' else 'Company'} [{rid[:8]}]: row was missing; re-added with stored verdict")
 
+    # 2b. Rank with the verdicts just read from the sheet (they are imported into SQLite only after this plan), so a record you
+    # rejected a moment ago is not listed again. `shortlist` may be a ready Shortlist or a callable(overrides) -> Shortlist.
+    if callable(shortlist):
+        overrides = {rid: decision for tab in ("Posts", "Companies") for rid, decision, _ in imports[tab] if decision}
+        shortlist = shortlist(overrides)
+    if shortlist is not None:
+        report.session_note = (f"Review session: CONTINUING {shortlist.session_id[:8]} (same records, re-checked; nothing new is added; "
+                               f"{len(shortlist.dropped)} dropped: " + "; ".join(f"{l[:40]} ({why})" for _, l, why in shortlist.dropped[:5]) + ")"
+                               if shortlist.mode == "continue" else "Review session: NEW (the next batch; start it only on purpose)")
+    if shortlist is not None:
+        for data in (posts, companies):
+            for rid, row in data.items():
+                if rid in shortlist.scores:
+                    row["Score"], row["Explanation"] = str(shortlist.scores[rid][0]), shortlist.scores[rid][1]
+
     # 3. Plan the sheet writes.
     plans = {}
     for tab, data in (("Posts", posts), ("Companies", companies), ("Runs", runs)):
         def human_for(rid, restore_only=True, _tab=tab):
             return restores[_tab].get(rid, {"cells": {}})["cells"] if _tab != "Runs" else {}
-        plans[tab] = _plan_keyed_tab(states[tab], found[tab], data, human_for, report, tab,
-                                     appendable={"Companies": load_publishable_company_ids,
-                                                 "Posts": load_publishable_job_ids}.get(tab, lambda c: None)(conn))
+        appendable = {"Companies": load_publishable_company_ids, "Posts": load_publishable_job_ids}.get(tab, lambda c: None)(conn)
+        admitted = {}
+        if shortlist is not None and appendable is not None:
+            chosen = shortlist.publish_job_ids if tab == "Posts" else shortlist.publish_company_ids
+            if tab == "Posts":
+                # With a shortlist, NEW job rows come only from the shortlist (plus jobs that carry a human verdict, so they are never
+                # lost). The older broad gate (every job of a publishable company) is not applied: rows it admitted earlier stay.
+                appendable = set(chosen) | {r[0] for r in conn.execute("SELECT job_id FROM verdicts WHERE job_id IS NOT NULL")}
+            else:
+                appendable = appendable | chosen
+            admitted = {rid: "shortlist" for rid in chosen}
+        plans[tab] = _plan_keyed_tab(states[tab], found[tab], data, human_for, report, tab, appendable=appendable, admitted_by=admitted)
         if tab != "Runs":
             for rid, info in restores[tab].items():
                 if info["row"] is not None:
@@ -602,7 +658,8 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
                     for name, value in info["cells"].items():
                         plans[tab].updates[f"{col_letter(st.col[name])}{info['row']}"] = value
                     report.cells_updated[tab] = len(plans[tab].updates)
-    plans["Shortlist"] = _plan_shortlist(states["Shortlist"], load_shortlist_rows(conn), report)
+    plans["Shortlist"] = _plan_shortlist(states["Shortlist"], shortlist.rows if shortlist is not None else load_shortlist_rows(conn), report)
+    report.planned = {tab: plans[tab].detail for tab in TAB_ORDER}
 
     if dry_run:
         return report
@@ -647,5 +704,6 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None):
     result = "partial" if report.conflicts else "success"
     db.finish_run(conn, report.run_id, result, now=now, summary={
         "appended": report.appended, "cells_updated": report.cells_updated,
-        "verdicts_imported": len(report.verdicts_imported), "conflicts": len(report.conflicts)})
+        "verdicts_imported": len(report.verdicts_imported), "conflicts": len(report.conflicts),
+        **(shortlist.summary(report.run_id) if shortlist is not None else {})})
     return report

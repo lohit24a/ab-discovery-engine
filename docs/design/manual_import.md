@@ -1,7 +1,12 @@
 # Manual job import: design and test plan (Day 12, checkpoint 1)
 
-Status: **design only**. Nothing in this document is implemented. The implementation is approved separately at Day 12
-checkpoint 2. It reuses the existing identity, sighting and history safeguards and adds no framework or service.
+Status: **implemented in Day 12 (final phase), not applied to production.** `discovery/imports.py`, command `import-manual`
+(dry run by default), 27 tests, fictional frozen fixture `tests/fixtures/manual_import/`. `--apply` needs schema version 7
+(migration 7, `manual_inputs`), which is NOT applied to production and needs the operator's approval. Decisions taken: migration
+7 is justified (jobs have no description column and the supplied text must live in the backed-up database with its provenance);
+URL-only rows are valid only when the URL attaches to exactly one existing job; manual jobs are held from the normal publication
+gate and are published only if shortlisted (hand-imported jobs sort first among new discoveries); availability of a manual job
+is always `unknown`. The text below is the original design and is kept for traceability.
 
 ## 1. What it must do
 

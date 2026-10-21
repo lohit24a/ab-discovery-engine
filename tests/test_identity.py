@@ -266,7 +266,7 @@ def test_migration_5_is_additive_and_preserves_existing_rows(tmp_path):
     raw.execute("INSERT INTO sources (source_id, name, source_type, created_at, updated_at) VALUES ('s','S','other','t','t')")
     raw.commit()
     raw.close()
-    assert db.initialize_database(path) == SCHEMA_VERSION == 6
+    assert db.initialize_database(path) == SCHEMA_VERSION == 7
     c = db.connect(path)
     try:
         assert c.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 1

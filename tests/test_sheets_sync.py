@@ -567,12 +567,12 @@ def test_shortlist_has_no_human_columns_and_stays_empty_without_scores(conn, wor
     assert backend.data("Shortlist") == []
 
 
-def test_formula_like_text_is_written_as_plain_text_by_design(conn):
+def test_formula_like_text_is_neutralised_with_a_leading_apostrophe(conn):
     c, _ = db.observe_company(conn, source_id="yc", source_url="https://yc.example/x", name="=HYPERLINK(1)",
                               external_id="x", now=T1)
     backend = FakeBackend()
     sync(conn, backend)
-    assert backend.cell("Companies", backend.row_of("Companies", c), "Company") == "=HYPERLINK(1)"
+    assert backend.cell("Companies", backend.row_of("Companies", c), "Company") == "'=HYPERLINK(1)"
 
 
 def test_schema_owner_summary_is_consistent():

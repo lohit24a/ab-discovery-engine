@@ -1,0 +1,6 @@
+url,company_hint,job_title_hint,location_hint,experience_hint,source,notes,description_file
+https://careers.zedcorp.example/job/778899,Zed Corp,Forward Deployed Engineer,Bengaluru,0-2 years,manual,Fictional: saw it on a signed-in page,zed_fde.txt
+https://boards.greenhouse.io/fictionalco/jobs/9900110,Fictional Co,Business Operations Associate,"Bengaluru, Karnataka, India",,manual,Fictional: forwarded by a friend,
+,Inkwell Labs,Founders Office Associate,Bengaluru,,manual,Fictional: pasted text only,inkwell_fo.txt
+ftp://bad.example/job/1,Bad Co,Bad Role,,,manual,rejected: unsupported scheme,
+https://x.example/job/1,Formula Co,"=HYPERLINK(""http://evil.example"")",Bengaluru,,manual,Fictional: formula text must stay inert,

@@ -109,6 +109,8 @@ def classify_observation(sighting, source, latest_check, job_state):
         return "historical"
     if sighting["provider_freshness"] == "provider_retained" or job_state == "Unknown":
         return "historical"
+    if source["source_type"] == "manual":
+        return "unknown"                  # a person supplied it: not an observation of a source listing, never evidence of being open
     seen, started = _parse(sighting["last_seen_at"]), _parse(latest_check["started_at"]) if latest_check else None
     if not (seen and started):
         return "unknown"                  # no successful source check on record, or no usable timestamps

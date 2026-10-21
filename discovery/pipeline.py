@@ -20,7 +20,7 @@ from . import database as db
 from . import sheets_sync
 from .adapters import feashliaa as fz
 from .adapters import yc_companies as yc
-from .schema import SCHEMA_VERSION
+from .schema import SCHEMA_VERSION, operable
 
 SOURCE_ORDER = ("yc", "feashliaa")
 SOURCE_LABEL = {"yc": "YC companies (Stream B)", "feashliaa": "Feashliaa jobs (Stream A, supplementary)"}
@@ -172,7 +172,7 @@ def run_feashliaa_step(conn, apply, fetchers, cache_dir, prefilter, now):
 
 def _check_health(conn):
     version = db.get_schema_version(conn)
-    if version != SCHEMA_VERSION:
+    if not operable(version):
         raise PipelineError(f"Database schema is version {version}, expected {SCHEMA_VERSION}. "
                             "Back it up, then run: python -m discovery init-db")
     quick = conn.execute("PRAGMA quick_check").fetchone()[0]

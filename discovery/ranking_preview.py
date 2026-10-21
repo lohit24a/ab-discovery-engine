@@ -34,12 +34,14 @@ def _slim(r, with_components=True):
     return out
 
 
-def build_preview(conn, profile, ranking, as_of=None, with_hints=True, top=None, case_job_ids=(), upstream=None):
-    jobs, companies, ctx = cand_mod.load_candidates(conn, with_hints=with_hints, upstream=upstream)
+def rank_all(conn, profile, ranking, as_of=None, with_hints=True, upstream=None, verdict_overrides=None):
+    """Score every canonical job and company (read-only). -> (jobs, companies, job_results, {company_id: result}, as_of).
+    Company evidence is attached to each job so the job score can cite it."""
+    jobs, companies, _ = cand_mod.load_candidates(conn, with_hints=with_hints, upstream=upstream)
     as_of = as_of or (cand_mod.parse_when(ranking["reference"]["as_of"]) if ranking["reference"]["as_of"] else None) or cand_mod.database_as_of(conn)
-    sl = profile.raw["shortlist"]
-    n_jobs_top, n_co_top = (top or {}).get("jobs", sl["jobs"]), (top or {}).get("companies", sl["companies_only"])
-
+    for rec, key in [(j, j["job_id"]) for j in jobs] + [(c, c["company_id"]) for c in companies]:
+        if verdict_overrides and key in verdict_overrides:            # a verdict read from the sheet but not yet stored
+            rec["verdict"] = {"decision": verdict_overrides[key], "notes": (rec.get("verdict") or {}).get("notes", "")}
     cscored = {c["company_id"]: score_company(c, profile, ranking) for c in companies}
     by_co = {c["company_id"]: c for c in companies}
     for j in jobs:
@@ -48,6 +50,13 @@ def build_preview(conn, profile, ranking, as_of=None, with_hints=True, top=None,
         j["company_evidence"] = co["evidence"]
         j["also_company_candidate"] = cscored[j["company_id"]]["classification"] == "confirmed_eligible"
     jscored = [score_job(j, profile, ranking, as_of) for j in jobs]
+    return jobs, companies, jscored, cscored, as_of
+
+
+def build_preview(conn, profile, ranking, as_of=None, with_hints=True, top=None, case_job_ids=(), upstream=None):
+    jobs, companies, jscored, cscored, as_of = rank_all(conn, profile, ranking, as_of=as_of, with_hints=with_hints, upstream=upstream)
+    sl = profile.raw["shortlist"]
+    n_jobs_top, n_co_top = (top or {}).get("jobs", sl["jobs"]), (top or {}).get("companies", sl["companies_only"])
 
     raw_jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     raw_companies = conn.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
@@ -70,7 +79,8 @@ def build_preview(conn, profile, ranking, as_of=None, with_hints=True, top=None,
         for n in names:
             rows = [r for r in jscored if r["employer_key"] == n]
             out[n] = [{"id": r["id"][:8], "title": r["title"], "locations": r["locations"], "location_category": r["location_category"],
-                       "classification": r["classification"], "score": r["score"], "family": r["family"], "hints": r["hints"][:1]} for r in rows[:6]]
+                       "classification": r["classification"], "score": r["score"], "family": r["family"], "hints": r["hints"][:1],
+                       "merged_records": r.get("merged_records", 0)} for r in rows[:6]]
         return out
 
     return {

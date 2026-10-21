@@ -63,3 +63,8 @@ desktop.ini
 
 # Claude Code local-only settings
 .claude/settings.local.json
+
+# Manual imports (private, local)
+imports/*
+!imports/.gitkeep
+!imports/links.example.csv

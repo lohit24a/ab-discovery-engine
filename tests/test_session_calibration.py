@@ -19,24 +19,33 @@ def ranking():
 
 
 def rec(i, cls="confirmed_eligible", score=60, first_days_ago=1, verdict=None, **over):
-    r = {"kind": "job", "id": i, "company": "Co" + i, "title": "T" + i, "locations": ["Bengaluru"], "availability": "in_latest_check",
+    r = {"kind": "job", "id": i, "employer_key": "co" + i, "company": "Co" + i, "title": "T" + i, "locations": ["Bengaluru"], "availability": "in_latest_check",
          "classification": cls, "score": score, "verdict": verdict, "hard_exclusion": None, "family": "x", "location_category": "bengaluru",
          "explanation": "e", "local_first_seen": (AS_OF - timedelta(days=first_days_ago)).isoformat()}
     r.update(over)
     return r
 
 
-def test_lanes_are_exclusive_and_old_high_scores_do_not_take_new_slots(ranking):
+def test_lanes_are_exclusive_and_recent_discoveries_come_first(ranking):
     old = rec("old", score=99, first_days_ago=90)
     new = rec("new", score=50, first_days_ago=2)
     shown_same = rec("seen", score=80, first_days_ago=30)
     changed = rec("chg", score=70, first_days_ago=30)
     hist = {"seen": ses.fingerprint(shown_same), "chg": "different"}
     lanes = ses.assign_lanes([old, new, shown_same, changed], hist, AS_OF, ranking)
-    assert [r["id"] for r in lanes["new_discovery"]] == ["new"]
+    assert [r["id"] for r in lanes["new_discovery"]] == ["new", "old"]        # recent first; an older never-listed record still qualifies
     assert [r["id"] for r in lanes["changed"]] == ["chg"]
     assert [r["id"] for r in lanes["previously_unreviewed"]] == ["seen"]
-    assert "old" not in {r["id"] for items in lanes.values() for r in items}      # never shown, old, confirmed: not a "new" item
+    ids = [r["id"] for items in lanes.values() for r in items]
+    assert len(ids) == len(set(ids))                                           # one lane per record
+
+
+def test_yes_maybe_only_resurface_when_changed_and_no_never_does(ranking):
+    yes = rec("y", verdict="Yes")
+    hist = {"y": ses.fingerprint(yes)}
+    assert ses.classify_lane(yes, hist, AS_OF, ranking, 45) is None
+    assert ses.classify_lane(rec("y", verdict="Maybe", title="changed"), hist, AS_OF, ranking, 45) == "changed"
+    assert ses.classify_lane(rec("n", verdict="No"), {"n": "different"}, AS_OF, ranking, 45) is None
 
 
 def test_verdict_records_and_excluded_are_never_offered(ranking):
@@ -47,7 +56,9 @@ def test_verdict_records_and_excluded_are_never_offered(ranking):
 def test_slots_cap_each_lane_and_never_pad(ranking):
     many = [rec(f"n{i}", score=50 + i) for i in range(30)]
     lanes = ses.assign_lanes(many, {}, AS_OF, ranking)
-    assert len(lanes["new_discovery"]) == ranking["session"]["slots"]["new_discovery"] and lanes["new_discovery"][0]["score"] == 79
+    slots = ranking["session"]["slots"]
+    assert len(lanes["new_discovery"]) == slots["new_discovery"] + slots["changed"] + slots["previously_unreviewed"] + slots["uncertain_valuable"]   # unused review slots go to new
+    assert lanes["new_discovery"][0]["score"] == 79
     assert lanes["changed"] == []
 
 
@@ -109,3 +120,9 @@ def test_every_accepted_profile_setting_is_consumed():
         # invariants: the loader REJECTS any other value (missing experience is never senior; notes are never modified)
         unused += [f"{top}.{k}" for k in section if k not in code and f"{top}.{k}" not in ("experience.unknown_treatment", "verdicts.never_modify_notes")]
     assert not unused, f"profile settings accepted but never consumed: {unused}"
+
+
+def test_jobs_imported_by_hand_are_listed_first_among_new_discoveries(ranking):
+    items = [rec(f"n{i}", score=90 - i) for i in range(12)] + [rec("mine", score=50, user_supplied=True)]
+    lanes = ses.assign_lanes(items, {}, AS_OF, ranking)
+    assert lanes["new_discovery"][0]["id"] == "mine"

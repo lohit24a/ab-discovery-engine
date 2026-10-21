@@ -56,7 +56,7 @@ def test_yes_no_are_plain_strings_not_booleans():
 def test_shipped_files_load_and_validate():
     p, r = prof.load_profile(), prof.load_ranking()
     assert list(p.families) == list(prof.ROLE_TYPES) and len(p.families) == 8
-    assert p.status == "proposed_for_operator_review" and r["status"] == "proposed_for_operator_review"
+    assert p.status == "approved_by_operator_2026-10-21" and r["status"] == "approved_by_operator_2026-10-21"
     for fam in p.families.values():
         assert fam.strong and fam.re_strong is not None
 

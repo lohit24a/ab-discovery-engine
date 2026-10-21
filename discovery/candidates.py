@@ -106,6 +106,19 @@ def _alias_location_evidence(conn):
     return out
 
 
+def _manual_texts(conn):
+    """job_id -> {"text": latest user-supplied description or ''} for jobs that carry manual input (schema 7 only)."""
+    if not identity.table_exists(conn, "manual_inputs"):
+        return {}
+    out = {}
+    for r in conn.execute("""SELECT g.job_id, m.kind, m.text FROM manual_inputs m JOIN sightings g USING (sighting_id)
+                             WHERE g.job_id IS NOT NULL ORDER BY m.created_at, m.rowid"""):
+        entry = out.setdefault(r["job_id"], {"text": ""})
+        if r["kind"] == "description_text" and r["text"]:
+            entry["text"] = r["text"]
+    return out
+
+
 def load_candidates(conn, with_hints=True, upstream=None):
     """upstream: optional {normalised url: {"source_level":..., "recruiter_posted":...}} read OFFLINE from cached source data
     (see upstream_attrs); it is evidence the database does not store today. Read-only either way."""
@@ -118,14 +131,15 @@ def load_candidates(conn, with_hints=True, upstream=None):
         for r in conn.execute("SELECT entity_type, canonical_id, alias_id FROM identity_links WHERE status = 'confirmed' ORDER BY created_at, link_id"):
             merged_into.setdefault((r["entity_type"], r["canonical_id"]), []).append(r["alias_id"])
     alias_loc = _alias_location_evidence(conn)
+    manual = _manual_texts(conn)
 
     companies = {}
-    for r in conn.execute("SELECT company_id, name, domain, facts, identity_status FROM companies"):
+    for r in conn.execute("SELECT company_id, name, domain, facts, identity_status, created_at FROM companies"):
         if r["company_id"] in alias_cos:
             continue
         facts = json.loads(r["facts"])
         companies[r["company_id"]] = {"company_id": r["company_id"], "name": r["name"], "domain": r["domain"], "facts": facts,
-                                      "evidence": company_evidence(facts), "sources": set(), "n_jobs": 0, "merged_records": len(merged_into.get(("company", r["company_id"]), []))}
+                                      "evidence": company_evidence(facts), "sources": set(), "n_jobs": 0, "first_seen": r["created_at"], "merged_records": len(merged_into.get(("company", r["company_id"]), []))}
     for r in conn.execute("SELECT g.company_id, g.source_id FROM sightings g WHERE g.company_id IS NOT NULL"):
         if r["company_id"] in companies:
             companies[r["company_id"]]["sources"].add(r["source_id"])
@@ -178,7 +192,8 @@ def load_candidates(conn, with_hints=True, upstream=None):
                      "dated": dated, "local_first_seen": r["first_seen_at"], "last_seen": max((s["last_seen_at"] for s in ss), default=r["last_seen_at"]),
                      "freshness_values": sorted({s["provider_freshness"] or "none" for s in ss}), "verdict": verdicts["job"].get(r["job_id"]),
                      "source_level": attrs.get("source_level"), "recruiter_posted": attrs.get("recruiter_posted"),
-                     "merged_records": len(merged), "url": r["posting_url"], "hints": [], "description": ""})
+                     "merged_records": len(merged), "url": r["posting_url"], "link": r["posting_url"] or (ss[0]["source_url"] if ss else ""), "hints": [], "description": manual.get(r["job_id"], {}).get("text", ""),
+                     "user_supplied": r["job_id"] in manual, "manual_only": bool(ss) and all(x["source_id"] == "manual" for x in ss)})
     context = {"sources": sources, "checks": {k: dict(v) for k, v in checks.items()}}
     if with_hints:
         jr = identity.load_job_refs(conn)
@@ -186,8 +201,6 @@ def load_candidates(conn, with_hints=True, upstream=None):
         jh, ch = duplicate_hints(conn, jr, cr)
         for j in jobs:
             j["hints"] = jh.get(j["job_id"], [])
-            if j["merged_records"]:
-                j["hints"] = [f"merged from {j['merged_records']} record(s); showing every recorded location"] + j["hints"]
         for cid, c in companies.items():
             c["hints"] = ch.get(cid, [])
     else:

@@ -108,7 +108,7 @@ def test_confirmed_merges_are_presented_once_with_every_location(tmp_path, cfg):
         assert rows[0]["location_category"] == "bengaluru" and rows[0]["classification"] == "confirmed_eligible"
     mind = pv["regression_cases"]["mindtickle"][0]
     assert any("Pune" in l for l in mind["locations"]) and any("Bengaluru" in l for l in mind["locations"])    # Bengaluru is not hidden
-    assert any("merged from 1 record" in h for h in mind["hints"])
+    assert mind["merged_records"] == 1 and mind["hints"] == []              # a confirmed merge is not an unresolved duplicate
     assert len(pv["regression_cases"]["xendit"][0]["locations"]) >= 6
 
 
@@ -217,7 +217,7 @@ def test_cli_preview_writes_only_the_requested_json(tmp_path, cfg, capsys):
     text = capsys.readouterr().out
     assert code == 0 and out.is_file() and "Ranking preview (read-only" in text and "never padded" in text
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert data["ranking_status"] == "proposed_for_operator_review" and data["considered"]["distinct_canonical_jobs"] > 0
+    assert data["ranking_status"] == "approved_by_operator_2026-10-21" and data["considered"]["distinct_canonical_jobs"] > 0
     assert file_hash(path) == before
 
 

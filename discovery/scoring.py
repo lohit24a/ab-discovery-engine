@@ -131,7 +131,8 @@ def score_job(c, profile, ranking, as_of):
     loc = classify_location(c["locations"], profile)
     ctext = c.get("company_text") or ""
     role = match_roles(c["title"], profile, ctext, c.get("description", ""))
-    exp = classify_experience(c["title"], profile, c.get("exp_min"), c.get("exp_max"), c.get("exp_text"))
+    exp = classify_experience(c["title"], profile, c.get("exp_min"), c.get("exp_max"),
+                              " ".join(x for x in (c.get("exp_text"), c.get("description")) if x) or None)
     screen = screen_title(c["title"], profile) if not role.has_signal else None
     when, date_codes = posting_date(c, ranking)
     excl = []
@@ -155,7 +156,7 @@ def score_job(c, profile, ranking, as_of):
             "role_strength": role.best.strength if role.best else None, "experience": exp.category, "hints": list(c.get("hints", [])),
             "sources": list(c.get("source_ids", [])), "employer_key": name_key(c["company_name"]), "verdict": (verdict or {}).get("decision"),
             "missing_evidence": missing, "local_first_seen": c.get("local_first_seen"), "last_seen": c.get("last_seen"),
-            "state": c.get("state"), "posting_date": when.isoformat() if when else None,
+            "state": c.get("state"), "merged_records": c.get("merged_records", 0), "user_supplied": bool(c.get("user_supplied")), "link": c.get("link") or c.get("url") or "", "posting_date": when.isoformat() if when else None,
             "families": [h.family for h in role.hits]}
     if excl:
         reason = next(r for r in EXCLUSION_ORDER if r in excl)
@@ -245,6 +246,8 @@ def score_job(c, profile, ranking, as_of):
     comp["experience"] = early + pen if (early or pen) else E["unknown"]
     codes += [f for f in exp.flags if f != "TITLE_JUNIOR_BUT_SENIOR"]
     facts.append(exp.detail if exp.detail else "experience not stated (unknown, not treated as senior)")
+    if "TITLE_MID_LEVEL" in exp.flags and ex["mid_level_title_treatment"] != "soft_penalty":
+        facts.append("the title has a mid-level word, which your settings do not penalise")
     senior_signal = exp.category in ("senior", "executive")
     if senior_signal:
         review.append(f"{exp.category} experience signal in the title/requirements")
@@ -333,6 +336,12 @@ def score_job(c, profile, ranking, as_of):
         codes.append("VERDICT_MAYBE")
     if c.get("hints"):
         codes.append("HINT_UNRESOLVED_IDENTITY")
+    if c.get("merged_records"):
+        codes.append("MERGED_RECORDS")
+        facts.append(f"combines {c['merged_records']} duplicate record(s) confirmed as the same posting; every recorded location is shown")
+    if c.get("user_supplied"):
+        codes.append("USER_SUPPLIED")
+        facts.append("details supplied by you" + (" including a description" if c.get("description") else "") + ", not independently verified")
 
     score = sum(comp.values())
     T = W["thresholds"]
@@ -362,7 +371,7 @@ def score_company(c, profile, ranking):
     ev = c["evidence"]
     verdict = c.get("verdict")
     base = {"kind": "company", "id": c["company_id"], "company": c["name"], "employer_key": name_key(c["name"]), "hints": list(c.get("hints", [])),
-            "verdict": (verdict or {}).get("decision"), "n_jobs": c.get("n_jobs", 0), "sources": sorted(c.get("sources", [])),
+            "verdict": (verdict or {}).get("decision"), "n_jobs": c.get("n_jobs", 0), "local_first_seen": c.get("first_seen"), "sources": sorted(c.get("sources", [])),
             "missing_evidence": ["FUNDING_NOT_RECORDED", "OPERATING_STATUS_" + ("SOURCE_REPORTED" if ev.get("yc_status") else "UNKNOWN"),
                                  "FACTS_ARE_SOURCE_REPORTED"]}
     if hx["human_verdict_no"] and verdict and verdict.get("decision") == "No" and profile.raw["verdicts"]["suppress_rejected"]:

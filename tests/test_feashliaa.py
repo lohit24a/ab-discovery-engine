@@ -470,7 +470,7 @@ def test_cli_requires_exactly_one_mode_and_migration_4_preserves_sightings(tmp_p
                 " VALUES ('x','s','c','e','https://x.example','a','b')")
     raw.commit()
     raw.close()
-    assert db.initialize_database(path) == SCHEMA_VERSION == 6   # v3 -> v6: later migrations stay additive
+    assert db.initialize_database(path) == SCHEMA_VERSION == 7   # v3 -> v7: later migrations stay additive
     c = db.connect(path)
     try:
         s = c.execute("SELECT * FROM sightings").fetchone()

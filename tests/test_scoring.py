@@ -199,3 +199,16 @@ def test_mixed_india_literal_and_inactive_company(profile, ranking):
     assert inactive["classification"] == "needs_review" and "CO_STATUS_INACTIVE_REPORTED" in inactive["reason_codes"]
     generic = sc.score_company(company(evidence={"text": "A B2B SaaS tool.", "industries": []}), profile, ranking)
     assert generic["classification"] != "confirmed_eligible"
+
+
+def test_confirmed_merges_are_not_reported_as_unresolved_identity(profile, ranking):
+    r = sc.score_job(job(merged_records=2), profile, ranking, AS_OF)
+    assert "MERGED_RECORDS" in r["reason_codes"] and "HINT_UNRESOLVED_IDENTITY" not in r["reason_codes"]
+    assert "combines 2 duplicate record(s) confirmed as the same posting" in r["explanation"] and "Review hint" not in r["explanation"]
+    h = sc.score_job(job(hints=["possible duplicate of another record"]), profile, ranking, AS_OF)
+    assert "HINT_UNRESOLVED_IDENTITY" in h["reason_codes"] and "Review hint: possible duplicate" in h["explanation"]
+
+
+def test_a_mid_level_word_is_disclosed_even_when_not_penalised(profile, ranking):
+    r = sc.score_job(job("Business Operations Manager"), profile, ranking, AS_OF)
+    assert "TITLE_MID_LEVEL" in r["reason_codes"] and "does not penalise" in r["explanation"].replace("do not penalise", "does not penalise")

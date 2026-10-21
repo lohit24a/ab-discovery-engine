@@ -60,6 +60,19 @@ TAB_COLUMNS = {
 }
 
 
+_NUMERIC = __import__("re").compile(r"^-?\d+(\.\d+)?$")
+
+
+def safe_cell(value):
+    """Text for a MACHINE-owned cell. A string that starts like a formula (= + - @, tab or carriage return) gets a leading
+    apostrophe so a spreadsheet can never evaluate user- or source-provided text, even if a cell is later re-entered by hand.
+    Plain numbers are left alone. Writes already use raw input; this is a second layer."""
+    text = "" if value is None else str(value)
+    if text and text[0] in "=+-@\t\r" and not _NUMERIC.match(text):
+        return "'" + text
+    return text
+
+
 def column_names(tab):
     return [c.name for c in TAB_COLUMNS[tab]]
 

@@ -308,7 +308,44 @@ PRAGMA user_version = 6;
 COMMIT;
 """
 
-MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6]
+# v7 (Day 12 manual import): the text and hints a person supplies by hand. Jobs have no description column, and a supplied
+# description feeds role evidence, so it must live inside the backed-up database with its provenance: always user-supplied,
+# never verified (both enforced by CHECK), append-only (a changed description is a new row; history is never rewritten).
+# Purely additive. Not applied to production without the operator's approval; commands keep working at version 6.
+MIGRATION_7 = """
+BEGIN;
+
+CREATE TABLE manual_inputs (
+    input_id      TEXT PRIMARY KEY,
+    sighting_id   TEXT NOT NULL REFERENCES sightings(sighting_id) ON DELETE RESTRICT,
+    kind          TEXT NOT NULL CHECK (kind IN ('url_row', 'description_text', 'export_row')),
+    sha256        TEXT NOT NULL CHECK (length(sha256) = 64),
+    text          TEXT NOT NULL DEFAULT '',
+    hints         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(hints)),
+    origin        TEXT NOT NULL DEFAULT '',
+    user_supplied INTEGER NOT NULL DEFAULT 1 CHECK (user_supplied = 1),
+    verified      INTEGER NOT NULL DEFAULT 0 CHECK (verified = 0),
+    created_at    TEXT NOT NULL,
+    UNIQUE (sighting_id, kind, sha256)
+);
+CREATE INDEX ix_manual_inputs_sighting ON manual_inputs(sighting_id, created_at);
+CREATE TRIGGER trg_manual_inputs_no_update BEFORE UPDATE ON manual_inputs
+BEGIN SELECT RAISE(ABORT, 'manual_inputs is append-only'); END;
+CREATE TRIGGER trg_manual_inputs_no_delete BEFORE DELETE ON manual_inputs
+BEGIN SELECT RAISE(ABORT, 'manual_inputs is append-only'); END;
+
+PRAGMA user_version = 7;
+COMMIT;
+"""
+
+MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7]
 # Supplementary tables (not part of the original eight): added by later migrations.
-SUPPLEMENTARY_TABLES = ("identity_links", "identity_relations")
+SUPPLEMENTARY_TABLES = ("identity_links", "identity_relations", "manual_inputs")
 SCHEMA_VERSION = len(MIGRATIONS)
+# Oldest version the commands still operate on. Migration 7 (manual_inputs) is optional until the operator approves it;
+# only the manual importer's --apply requires it.
+MIN_OPERABLE_VERSION = 6
+
+
+def operable(version):
+    return MIN_OPERABLE_VERSION <= version <= SCHEMA_VERSION

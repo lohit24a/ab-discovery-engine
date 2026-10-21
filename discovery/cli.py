@@ -78,7 +78,7 @@ def run_checks(root: Path):
 def check_database(root: Path):
     """Read-only database checks. Never creates or modifies the database."""
     from . import database
-    from .schema import APP_TABLES, SCHEMA_VERSION
+    from .schema import APP_TABLES, SCHEMA_VERSION, operable
 
     try:
         db_path = database.resolve_db_path(root)
@@ -103,6 +103,9 @@ def check_database(root: Path):
         version = database.get_schema_version(conn)
         if version == SCHEMA_VERSION:
             results.append((PASS, f"Schema version {version} is supported"))
+        elif operable(version):
+            results.append((PASS, f"Schema version {version} is supported (migration {SCHEMA_VERSION} is optional and not applied; "
+                                  "only the manual importer's --apply needs it)"))
         elif version < SCHEMA_VERSION:
             results.append((WARNING, f"Schema version {version} is older than {SCHEMA_VERSION}; "
                                      "run: python -m discovery init-db"))
@@ -160,29 +163,55 @@ def _configure_sync(parser):
                         help="spreadsheet to synchronize (only 'test' is enabled)")
     parser.add_argument("--dry-run", action="store_true",
                         help="report intended changes without modifying SQLite or the spreadsheet")
+    parser.add_argument("--with-shortlist", action="store_true",
+                        help="rank (read-only), generate the Shortlist tab, fill Score/Explanation, and let ONLY the shortlisted records "
+                             "receive new Posts/Companies rows. Without it the sync behaves exactly as before")
+    parser.add_argument("--new-session", action="store_true",
+                        help="start the NEXT review session (implies --with-shortlist): previously listed records are deprioritised and a new "
+                             "bounded batch is proposed. Without it, --with-shortlist only reconciles the current session")
+    parser.add_argument("--db", help="database to use (default: the project database); a disposable copy is fine for a dry run")
+    parser.add_argument("--plan-output", help="write the exact planned changes (rows and machine cells) as JSON here; put it under exports/")
 
 
 def cmd_sync(args) -> int:
     from . import database, sheets_sync
-    from .schema import SCHEMA_VERSION
+    from .schema import SCHEMA_VERSION, operable
 
     try:
-        db_path = database.resolve_db_path(PROJECT_ROOT)
+        db_path = Path(args.db) if getattr(args, "db", None) else database.resolve_db_path(PROJECT_ROOT)
         if not db_path.is_file():
             print("[FAIL] Database not initialized; run: python -m discovery init-db")
             return 1
         backend = sheets_sync.open_backend(args.target, PROJECT_ROOT)
         conn = database.connect(db_path, readonly=args.dry_run)
+        holder = {}
         try:
-            if database.get_schema_version(conn) != SCHEMA_VERSION:
+            if not operable(database.get_schema_version(conn)):
                 print("[FAIL] Database schema is out of date; run: python -m discovery init-db")
                 return 1
-            report = sheets_sync.sync_to_sheets(conn, backend, dry_run=args.dry_run)
+            shortlist_arg = None
+            if getattr(args, "with_shortlist", False) or getattr(args, "new_session", False):
+                from . import profile as prof, shortlist as shortlist_mod
+                pr, rk = prof.load_profile(), prof.load_ranking()
+
+                def shortlist_arg(overrides):
+                    holder["sl"] = shortlist_mod.build(conn, pr, rk, verdict_overrides=overrides, new_session=getattr(args, "new_session", False))
+                    return holder["sl"]
+            report = sheets_sync.sync_to_sheets(conn, backend, dry_run=args.dry_run, shortlist=shortlist_arg)
         finally:
             conn.close()
     except (sheets_sync.SyncError, database.DatabaseConfigError) as exc:
         print(f"[FAIL] {exc}")
         return 1
+    if getattr(args, "plan_output", None):
+        import json as _json
+        out = Path(args.plan_output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        sl = holder.get("sl")
+        out.write_text(_json.dumps({"planned": report.planned, "counts": {"appended": report.appended, "cells_updated": report.cells_updated},
+                                    "shortlist_rows": sl.rows if sl else [], "lanes": {k: len(v) for k, v in sl.lanes.items()} if sl else {}},
+                                   indent=1, default=str), encoding="utf-8")
+        print(f"Exact planned changes written to {args.plan_output}")
     print("\n".join(report.lines()))
     return 2 if report.conflicts else 0
 
@@ -198,7 +227,7 @@ def _configure_import_yc(parser):
 def cmd_import_yc(args, fetch=None) -> int:
     from . import database
     from .adapters import yc_companies as yc
-    from .schema import SCHEMA_VERSION
+    from .schema import SCHEMA_VERSION, operable
 
     fetch = fetch or yc.fetch_json
     db_path = database.resolve_db_path(PROJECT_ROOT)
@@ -210,7 +239,7 @@ def cmd_import_yc(args, fetch=None) -> int:
                 print("[FAIL] Database not initialized; run: python -m discovery init-db")
                 return 1
             conn = database.connect(db_path)
-            if database.get_schema_version(conn) != SCHEMA_VERSION:
+            if not operable(database.get_schema_version(conn)):
                 print("[FAIL] Database schema is out of date; run: python -m discovery init-db")
                 return 1
         elif db_ready:
@@ -258,7 +287,7 @@ def cmd_import_yc(args, fetch=None) -> int:
 def cmd_import_feashliaa(args, fetch=None, cache_dir=None) -> int:
     from . import database
     from .adapters import feashliaa as fz
-    from .schema import SCHEMA_VERSION
+    from .schema import SCHEMA_VERSION, operable
 
     fetch = fetch or fz.fetch_bytes
     cache_dir = cache_dir or (PROJECT_ROOT / "data" / "cache" / "feashliaa")
@@ -270,7 +299,7 @@ def cmd_import_feashliaa(args, fetch=None, cache_dir=None) -> int:
                 print("[FAIL] Database not initialized; run: python -m discovery init-db")
                 return 1
             conn = database.connect(db_path)
-            if database.get_schema_version(conn) != SCHEMA_VERSION:
+            if not operable(database.get_schema_version(conn)):
                 print("[FAIL] Database schema is out of date; back it up, then run: python -m discovery init-db")
                 return 1
         elif db_path.is_file():
@@ -513,7 +542,7 @@ def cmd_restricted_import(args, console=None, policy_path=None, db_path=None, ba
     """Phase B: no provider is contacted; needs its own interactive confirmation (not for --dry-run)."""
     from . import database, restricted_policy as rp
     from .adapters import jobspy_source as js
-    from .schema import SCHEMA_VERSION
+    from .schema import SCHEMA_VERSION, operable
 
     try:
         snapshot = js.load_snapshot(args.snapshot)
@@ -531,7 +560,7 @@ def cmd_restricted_import(args, console=None, policy_path=None, db_path=None, ba
         if args.dry_run:
             print("\nDRY RUN: no confirmation asked, nothing written.")
             return 0
-        if version != SCHEMA_VERSION:
+        if not operable(version):
             raise rp.PolicyError("database schema is out of date; back it up and run init-db first")
         auth = rp.authorize_interactively(plan, policies, console=console)
         policies = rp.load_policy(policy_path or rp.POLICY_PATH)
@@ -700,7 +729,7 @@ def cmd_yc_jobs_import(args, db_path=None, backup_dir=None) -> int:
     from . import database
     from .adapters import jobspy_source as js
     from .adapters import yc_jobs as yj
-    from .schema import SCHEMA_VERSION
+    from .schema import SCHEMA_VERSION, operable
     try:
         snapshot = yj.load_snapshot(args.snapshot)
     except yj.YCJobsError as exc:
@@ -719,7 +748,7 @@ def cmd_yc_jobs_import(args, db_path=None, backup_dir=None) -> int:
     if not args.apply:
         print("\nDRY RUN: nothing was written. Re-run with --apply only after the operator approves the import.")
         return 0
-    if version != SCHEMA_VERSION:
+    if not operable(version):
         print("[REFUSED] database schema is out of date; back it up and run init-db first")
         return 1
     backup = js.verified_backup(path_db, backup_dir, label="pre-yc-jobs-import")
@@ -859,6 +888,59 @@ def cmd_ranking_preview(args, db_path=None) -> int:
     return 0
 
 
+def _configure_import_manual(parser):
+    parser.add_argument("--links", help="CSV of jobs you collected by hand (default imports/links.csv); local file inside imports/ only")
+    parser.add_argument("--descriptions", help="folder of saved plaintext descriptions (default imports/descriptions)")
+    parser.add_argument("--export", help="a permitted export CSV inside imports/ (needs --mapping)")
+    parser.add_argument("--mapping", help="YAML naming the export's columns (imports/export_mapping.yaml)")
+    parser.add_argument("--db", help="database to use (default: the project database); a disposable copy is fine")
+    parser.add_argument("--apply", action="store_true", help="write the plan (verified backup first; needs schema version 7 and YOUR approval). Default: dry run")
+
+
+def cmd_import_manual(args, db_path=None) -> int:
+    """Local files only; never opens a URL. Dry run by default; --apply takes a verified backup first."""
+    from . import database, imports
+    from .adapters import jobspy_source
+    path_db = Path(args.db) if getattr(args, "db", None) else (db_path or database.resolve_db_path(PROJECT_ROOT))
+    if not path_db.is_file():
+        print("[REFUSED] database not found")
+        return 1
+    try:
+        if args.export:
+            if not args.mapping:
+                print("[REFUSED] --export needs --mapping (columns are never guessed)")
+                return 1
+            parsed = imports.parse_export(imports.read_text(args.export, imports.MAX_CSV_BYTES), imports.load_mapping(args.mapping), origin=Path(args.export).name)
+        else:
+            links = args.links or str(imports.IMPORTS_DIR / "links.csv")
+            parsed = imports.parse_links(imports.read_text(links, imports.MAX_CSV_BYTES), args.descriptions, origin=Path(links).name)
+    except imports.ImportRejected as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    ro = database.connect(path_db, readonly=True)
+    try:
+        items = imports.plan(ro, parsed)
+        version = database.get_schema_version(ro)
+    finally:
+        ro.close()
+    print(chr(10).join(imports.render(items)))
+    if not args.apply:
+        print(chr(10) + "DRY RUN: nothing was written and nothing was fetched.")
+        return 0
+    if version < 7:
+        print("[REFUSED] the database is at schema version 6; migration 7 (manual_inputs) needs the operator's approval first. Nothing was written.")
+        return 1
+    backup = jobspy_source.verified_backup(path_db, label="pre-manual-import")
+    print(f"Verified backup: {backup.name}")
+    conn = database.connect(path_db)
+    try:
+        result = imports.apply(conn, items)
+    finally:
+        conn.close()
+    print("Applied:", {k: v for k, v in result.items() if k != "errors"}, "errors:", result["errors"])
+    return 0 if not result["errors"] else 2
+
+
 def _configure_identity_report(parser):
     parser.add_argument("--examples", type=int, default=2, help="representative examples to keep per rule")
     parser.add_argument("--output", help="also write the full report as JSON to this file (read-only otherwise)")
@@ -925,7 +1007,7 @@ def cmd_investor_boards_import(args, db_path=None, backup_dir=None) -> int:
     from . import database
     from .adapters import investor_boards as ib
     from .adapters import jobspy_source as js
-    from .schema import SCHEMA_VERSION
+    from .schema import SCHEMA_VERSION, operable
     try:
         snapshot = ib.load_snapshot(args.snapshot)
     except ib.InvestorBoardError as exc:
@@ -944,7 +1026,7 @@ def cmd_investor_boards_import(args, db_path=None, backup_dir=None) -> int:
     if not args.apply:
         print("\nDRY RUN: nothing was written. Re-run with --apply only after the operator approves the import.")
         return 0
-    if version != SCHEMA_VERSION:
+    if not operable(version):
         print("[REFUSED] database schema is out of date; back it up and run init-db first")
         return 1
     backup = js.verified_backup(path_db, backup_dir, label="pre-investor-boards-import")
@@ -976,6 +1058,7 @@ COMMANDS = {
     "investor-boards-collect": ("Read investor/accelerator boards into a snapshot (bounded, read-only; operator-approved)",
                                 cmd_investor_boards_collect, _configure_inv_collect),
     "ranking-preview": ("Read-only ranking preview with the proposed profile and weights; publishes and changes nothing", cmd_ranking_preview, _configure_ranking_preview),
+    "import-manual": ("Import jobs you supplied by hand from local files (dry run by default; --apply backs up first)", cmd_import_manual, _configure_import_manual),
     "identity-report": ("Read-only identity reconciliation report (duplicate evidence by tier); changes nothing", cmd_identity_report, _configure_identity_report),
     "investor-boards-report": ("Read-only report over saved investor-board snapshots", cmd_investor_boards_report, _configure_inv_report),
     "investor-boards-import": ("Import an investor-board snapshot after YOUR approval (dry-run by default)",

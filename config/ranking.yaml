@@ -1,8 +1,7 @@
 # Ranking weights for the A+B Discovery Engine (deterministic points, no AI, no model calls).
 #
-# STATUS: PROPOSED for operator review (Day 12, checkpoint 1). These point values encode subjective career
-# preferences. They are a starting point to make the previews readable; they are NOT final and nothing may depend on
-# them until the operator has reviewed and approved them. Change a number, rerun `ranking-preview`, compare.
+# STATUS: APPROVED by the operator on 2026-10-21 (items 1-12 of docs/design/ranking_preferences_for_approval.md, recommended
+# choices). Change a number, rerun `ranking-preview`, compare; any change needs the operator's approval. Change a number, rerun `ranking-preview`, compare.
 #
 # How a score is built
 #   score = sum of the component points below. Points never come from invented facts: every component is tied to a
@@ -16,7 +15,7 @@
 #   excluded            a hard exclusion applies (the record is kept, never shown in normal suggestions)
 
 version: 1
-status: proposed_for_operator_review
+status: approved_by_operator_2026-10-21
 
 reference:
   # null = the newest observation recorded in the database, so a frozen database always ranks the same way.

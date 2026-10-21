@@ -39,6 +39,10 @@ Run `.\.venv\Scripts\python.exe -m discovery run --sources <sources> --target te
 
 If the report lists pending TEST changes, show the counts and ask for explicit approval. Only after a clear yes, run `.\.venv\Scripts\python.exe -m discovery sync --target test --dry-run`, show it, then `.\.venv\Scripts\python.exe -m discovery sync --target test`. Feashliaa jobs are not approved for publishing; if a preview would add job rows, stop and ask. Verdicts and notes in the sheet are the user's; never overwrite them.
 
+### Shortlist publication (optional, separate approval)
+
+If the user asks for the ranked shortlist in the TEST sheet, run `.\.venv\Scripts\python.exe -m discovery sync --target test --dry-run --with-shortlist --plan-output exports/test_sync_plan.json`, show the counts and the exact rows/cells it lists, and say that the ranking settings are the operator's to approve. Write only after a clear yes to that specific plan, with `sync --target test --with-shortlist`. Only shortlisted records get new Posts/Companies rows; restricted sources are never listed; Verdict/Notes stay the user's. Manual imports (`import-manual`) are a separate user-invoked command, never part of this Skill, and `--apply` needs the user's own approval and schema 7.
+
 ## 7. Report and stop
 
 Run `.\.venv\Scripts\python.exe -m discovery report --last` and show it: sources attempted and their status, new/changed counts, integrity, TEST sync outcome, failed sources, skipped snapshots and pending actions. Then stop and wait for the user.
