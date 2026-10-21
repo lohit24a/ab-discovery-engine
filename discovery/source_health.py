@@ -49,7 +49,8 @@ def classify_check(check):
     if outcome == "failed":
         return classify_error(check["error_info"])
     if outcome == "partial":
-        return "partial"
+        # a company list derived only from job listings is never complete by construction; it is not a failure of the job scan
+        return "derived_only" if "derived from job listings" in (check["scope"] or "") else "partial"
     if outcome == "success":
         if n == 0:
             return "verified_empty" if complete else "unverified_zero"
@@ -60,7 +61,7 @@ def classify_check(check):
 
 
 WORST = ["blocked", "network_error", "schema_error", "failed_other", "interrupted", "partial", "unverified_zero", "incomplete", "complete_filtered", "verified_empty", "complete",
-         "skipped_unchanged", "no_checks"]
+         "derived_only", "skipped_unchanged", "no_checks"]
 
 
 def source_health(conn, now=None, stale_hours=None):
@@ -73,7 +74,7 @@ def source_health(conn, now=None, stale_hours=None):
                                WHERE c.source_id = ? ORDER BY c.started_at, c.rowid""", (src["source_id"],)).fetchall()
         collecting = [c for c in rows if c["outcome"] != "skipped"]
         entry = {"source_id": src["source_id"], "type": src["source_type"], "enabled": bool(src["enabled"]), "state": "no_checks", "completeness": "none", "stale": None,
-                 "age_hours": None, "latest_collecting_run": None, "scopes": [], "records_in_latest_run": 0, "errors": [], "last_skipped": None, "may_close_jobs": False, "closure_capable": False, "scope_count": 0, "state_counts": {},
+                 "age_hours": None, "latest_collecting_run": None, "scopes": [], "records_in_latest_run": 0, "errors": [], "last_skipped": None, "may_close_jobs": False, "closure_capable": False, "scope_count": 0, "state_counts": {}, "by_scope_kind": {},
                  "notes": []}
         skipped = [c for c in rows if c["outcome"] == "skipped"]
         if skipped:
@@ -89,14 +90,20 @@ def source_health(conn, now=None, stale_hours=None):
         states = [classify_check(c) for c in latest]
         if any(c["run_result"] == "interrupted" for c in latest):
             states.append("interrupted")
+        kinds = {}
+        for c, st in zip(latest, states):
+            kinds.setdefault((c["scope"] or "(whole source)").split(":")[0].split("/")[0], []).append(st)
+        by_kind = {k: min(v, key=WORST.index) for k, v in sorted(kinds.items())}
+        informative_states = [x for x in states if x != "derived_only"] or states
+        states_for_rollup = informative_states
         zero_like = ("unverified_zero", "verified_empty")
-        informative = [x for x in states if x not in zero_like] if len(states) > 1 and any(x not in zero_like for x in states) else states
+        informative = [x for x in states_for_rollup if x not in zero_like] if len(states_for_rollup) > 1 and any(x not in zero_like for x in states_for_rollup) else states_for_rollup
         state = min(informative, key=WORST.index)                    # a multi-scope run (one scope per company) is judged on the scopes that returned data
         unverified = sum(1 for x in states if x == "unverified_zero")
         started = min(_parse(c["started_at"]) or now for c in latest)
         age = (now - started).total_seconds() / 3600
         entry.update({"state": state, "latest_collecting_run": run_id, "age_hours": round(age, 1), "scopes": sorted({c["scope"] or "(whole source)" for c in latest}),
-                      "records_in_latest_run": sum(c["record_count"] or 0 for c in latest), "scope_count": len(latest),
+                      "records_in_latest_run": sum(c["record_count"] or 0 for c in latest), "scope_count": len(latest), "by_scope_kind": by_kind,
                       "state_counts": {k: states.count(k) for k in sorted(set(states))}, "errors": sorted({(c["error_info"] or "")[:120] for c in latest if c["error_info"]})})
         entry["stale"] = age > stale_hours.get(src["source_type"], 168)
         if state == "complete":
@@ -114,6 +121,8 @@ def source_health(conn, now=None, stale_hours=None):
             entry["notes"].append("zero records were returned and the source did not prove the scope empty: do not read this as 'no jobs'")
         if state == "complete_filtered":
             entry["notes"].append("complete for a filtered scope only (" + "; ".join(entry["scopes"])[:100] + "): never global completeness")
+        if "derived_only" in states:
+            entry["notes"].append("its company list is derived from job listings only (no directory): by design it is never complete, and it does not affect the job scan's state")
         if state in ("partial", "incomplete"):
             entry["notes"].append("part of the scope was not walked: absence from this source proves nothing")
         if entry["stale"]:
@@ -129,11 +138,13 @@ def render(rows):
     for r in rows:
         age = f"{r['age_hours']} h" if r["age_hours"] is not None else "-"
         lines.append(f"  {r['source_id']:<16} {r['state']:<18} completeness={r['completeness']:<6} age={age:<9} stale={r['stale']}  records={r['records_in_latest_run']}")
+        if len(r.get("by_scope_kind", {})) > 1:
+            lines.append("      scope kinds: " + ", ".join(f"{k}={v}" for k, v in r["by_scope_kind"].items()))
         for n in r["notes"]:
             lines.append(f"      - {n}")
         for e in r["errors"][:2]:
             lines.append(f"      ! {e}")
-    quiet = ("complete", "complete_filtered", "verified_empty", "skipped_unchanged", "no_checks")
+    quiet = ("complete", "complete_filtered", "verified_empty", "derived_only", "skipped_unchanged", "no_checks")
     attention = [f"{r['source_id']} ({r['state']})" for r in rows if r["state"] not in quiet or r["stale"]]
     if attention:
         lines.append("Sources needing attention: " + ", ".join(attention) + ". A job missing from them proves nothing.")

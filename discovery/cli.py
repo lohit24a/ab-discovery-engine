@@ -216,6 +216,41 @@ def cmd_sync(args) -> int:
     return 2 if report.conflicts else 0
 
 
+def _configure_live_publish(parser):
+    parser.add_argument("--plan-output", help="read-only: read the LIVE sheet, plan the bounded first publication and save the exact plan here (under exports/)")
+    parser.add_argument("--apply", action="store_true", help="perform the one bounded LIVE write described by --plan (needs every gate below)")
+    parser.add_argument("--plan", help="the saved plan file to execute (must equal a fresh plan)")
+    parser.add_argument("--backup", help="the fresh verified SQLite backup taken just before this write")
+    parser.add_argument("--authorized-first-live-trial", action="store_true",
+                        help="the operator's bounded first-LIVE authorization (2026-10-21); limits are enforced in code")
+
+
+def cmd_live_publish(args) -> int:
+    from . import live_publish, sheets_sync
+
+    try:
+        if args.apply:
+            if not (args.plan and args.backup):
+                print("[FAIL] --apply needs --plan and --backup")
+                return 1
+            report = live_publish.apply(args.plan, args.backup, authorized=args.authorized_first_live_trial)
+            print(chr(10).join(report.lines()))
+            return 2 if report.conflicts else 0
+        plan = live_publish.make_plan()
+    except (live_publish.PublishRefused, sheets_sync.SyncError) as exc:
+        print(f"[REFUSED] {exc}")
+        return 1
+    if args.plan_output:
+        out = Path(args.plan_output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        out.write_text(_json.dumps(plan, indent=1), encoding="utf-8")
+        print(f"Exact plan written to {args.plan_output}")
+    print(chr(10).join(plan["report_lines"]))
+    print("Limit violations: " + ("; ".join(plan["violations"]) if plan["violations"] else "none"))
+    return 1 if plan["violations"] else 0
+
+
 def _configure_import_yc(parser):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true",
@@ -1101,6 +1136,7 @@ COMMANDS = {
     "doctor": ("Run local project health checks (read-only)", cmd_doctor, None),
     "init-db": ("Create or upgrade the local SQLite database", cmd_init_db, None),
     "sync": ("Synchronize SQLite with the TEST Google Sheet", cmd_sync, _configure_sync),
+    "live-publish": ("Plan (read-only) or perform the bounded first-LIVE publication", cmd_live_publish, _configure_live_publish),
     "import-yc": ("Import Y Combinator companies (Stream B)", cmd_import_yc, _configure_import_yc),
     "import-feashliaa": ("Import filtered jobs from the Feashliaa feed (Stream A)", cmd_import_feashliaa,
                          _configure_import_yc),

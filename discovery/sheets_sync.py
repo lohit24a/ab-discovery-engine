@@ -39,6 +39,8 @@ from .sheets_schema import (HUMAN, KEY, KEY_COLUMN, MACHINE, NOTES_COLUMN, TAB_C
 WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 LIVE_BLOCKED = "LIVE synchronization is not enabled; only --target test is allowed"
 LIVE_STATES = ("New", "Active", "Changed", "Reopened")
+LIVE_SCOPE = "live"        # the explicit first-LIVE publication scope (see sync_to_sheets)
+LIVE_RUN_TYPE = "LIVE publication (stored snapshots; no new source collection)"
 BATCH_LIMIT = 500
 
 
@@ -410,6 +412,40 @@ def load_run_rows(conn):
     return out
 
 
+def live_run_row(started, finished, result, summary):
+    """The one Runs-tab row of a LIVE publication. Built from stored values only, so a later sync reproduces it exactly."""
+    return {"Started": started, "Finished": finished, "Status": result, "Type": LIVE_RUN_TYPE,
+            "Sources Succeeded": "", "Sources Failed/Partial/Skipped": "", "Records Processed": "",
+            "Unique Records": "", "New Records": str(summary.get("new_records", "")), "Shortlisted": str(summary.get("shortlisted", "")),
+            "Errors": _s(summary.get("notes"))[:500]}
+
+
+def load_live_run_rows(conn):
+    """Runs-tab rows in the LIVE scope: only LIVE publications. The development/TEST history stays in SQLite and is never backfilled."""
+    out = {}
+    for r in conn.execute("SELECT * FROM runs WHERE run_type = 'sync' AND result IN ('success', 'partial') ORDER BY started_at, run_id"):
+        try:
+            summary = json.loads(r["summary"] or "{}")
+        except ValueError:
+            continue
+        if summary.get("live_runs_row"):
+            out[r["run_id"]] = live_run_row(r["started_at"], _s(r["finished_at"]), r["result"], summary)
+    return out
+
+
+def _live_notes(conn, now):
+    """Source-health caveats, stated honestly, for the LIVE Runs row (stored evidence only)."""
+    from datetime import datetime
+
+    from . import source_health
+    try:
+        as_of = datetime.fromisoformat(now) if isinstance(now, str) else now
+        text = source_health.render(source_health.source_health(conn, now=as_of))[-1]
+    except Exception:                                  # a reporting problem must never block the sync
+        text = "source health unavailable"
+    return ("Published from existing stored snapshots; no source was contacted. " + text)[:500]
+
+
 def load_shortlist_rows(conn):
     """No scoring exists yet (ranking is a later step), so nothing is shortlisted."""
     return []
@@ -559,13 +595,21 @@ def _last_sync(conn):
     return row[0]
 
 
-def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
+def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None, scope=None):
     """Synchronize SQLite and the (TEST) spreadsheet. Returns a SyncReport; raises SyncError if unsafe.
 
     shortlist: optional shortlist.Shortlist (or a callable taking {record_id: verdict read from the sheet}). When given, the Shortlist tab is generated from it, Score/Explanation are filled for
     ranked records, and ONLY its selected records may receive new Posts/Companies rows beyond the normal publication gate
-    (restricted sources are never selected). The human Verdict/Notes columns are untouched by any of it."""
+    (restricted sources are never selected). The human Verdict/Notes columns are untouched by any of it.
+
+    scope="live" is the first-LIVE publication scope (requires a shortlist): NEW rows come only from the displayed shortlist
+    (Posts: its jobs; Companies: the companies of those jobs plus the company-only picks; never the older broad gates), the Runs tab
+    shows only LIVE publications (one row, written only when the sync changes something), and stored verdicts are NOT copied into
+    LIVE's human cells (LIVE's Verdict/Notes are only ever typed by the person; what they type is still imported). Nothing is deleted."""
     now = now or db.utc_now()
+    live = scope == LIVE_SCOPE
+    if live and shortlist is None:
+        raise SyncError("The LIVE scope needs a shortlist; nothing was written")
     report = SyncReport(dry_run=dry_run, spreadsheet=backend.title)
 
     # 1. Validate tabs and read EVERYTHING before any write.
@@ -582,7 +626,8 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
                         "no changes were made") from exc
     states = {tab: parse_tab(tab, raw[tab]) for tab in TAB_ORDER}
 
-    posts, companies, runs = load_post_rows(conn), load_company_rows(conn), load_run_rows(conn)
+    posts, companies = load_post_rows(conn), load_company_rows(conn)
+    runs = load_live_run_rows(conn) if live else load_run_rows(conn)
     found = {
         "Posts": index_rows(states["Posts"], set(posts), "job"),
         "Companies": index_rows(states["Companies"], set(companies), "company"),
@@ -608,12 +653,16 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
                 row_num, cells = found[tab][rid]
                 noun = "Job" if tab == "Posts" else "Company"
                 label = f"{noun} {data[rid].get('Job Title') or data[rid].get('Company')} [{rid[:8]}]"
+                shown = len(report.verdicts_restored)
                 imp, restore, _ = reconcile_human(label, cells[state.col[VERDICT_COLUMN]],
                                                   cells[state.col[NOTES_COLUMN]], verdict_row, last_sync, report)
+                if live:                                    # LIVE's human cells are the person's alone: never filled from the shared store
+                    restore = {}
+                    del report.verdicts_restored[shown:]
                 if imp:
                     imports[tab].append((rid, *imp))
                 restores[tab][rid] = {"row": row_num, "cells": restore}
-            elif verdict_row:
+            elif verdict_row and not live:
                 restores[tab][rid] = {"row": None, "cells": {VERDICT_COLUMN: verdict_row["decision"] or "",
                                                               NOTES_COLUMN: verdict_row["notes"]}}
                 report.verdicts_restored.append(
@@ -641,7 +690,19 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
             return restores[_tab].get(rid, {"cells": {}})["cells"] if _tab != "Runs" else {}
         appendable = {"Companies": load_publishable_company_ids, "Posts": load_publishable_job_ids}.get(tab, lambda c: None)(conn)
         admitted = {}
-        if shortlist is not None and appendable is not None:
+        if live:
+            if tab == "Runs":
+                appendable = set()                           # the single publication row is added at write time
+            elif tab == "Posts":
+                appendable = set(shortlist.publish_job_ids)
+                admitted = {rid: "shortlist" for rid in appendable}
+            else:
+                of_jobs = {r[0] for r in conn.execute(
+                    f"SELECT DISTINCT company_id FROM jobs WHERE job_id IN ({','.join('?' * len(shortlist.publish_job_ids)) or 'NULL'})",
+                    tuple(shortlist.publish_job_ids))}
+                appendable = of_jobs | set(shortlist.publish_company_ids)
+                admitted = {rid: ("shortlist_company" if rid in shortlist.publish_company_ids else "shortlist_job_company") for rid in appendable}
+        elif shortlist is not None and appendable is not None:
             chosen = shortlist.publish_job_ids if tab == "Posts" else shortlist.publish_company_ids
             if tab == "Posts":
                 # With a shortlist, NEW job rows come only from the shortlist (plus jobs that carry a human verdict, so they are never
@@ -659,6 +720,15 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
                         plans[tab].updates[f"{col_letter(st.col[name])}{info['row']}"] = value
                     report.cells_updated[tab] = len(plans[tab].updates)
     plans["Shortlist"] = _plan_shortlist(states["Shortlist"], shortlist.rows if shortlist is not None else load_shortlist_rows(conn), report)
+    pending_run = None
+    if live:
+        changed = any(plans[t].header_cells or plans[t].appends or plans[t].updates for t in ("Shortlist", "Posts", "Companies"))
+        if changed:
+            summary_extra = {"new_records": len(plans["Posts"].appends) + len(plans["Companies"].appends), "shortlisted": len(shortlist.rows),
+                             "notes": _live_notes(conn, now)}
+            pending_run = summary_extra
+            plans["Runs"].detail["appends"].append({"record_id": "(assigned when the sync runs)", "summary": LIVE_RUN_TYPE, "admitted_by": "live_publication_run"})
+            report.appended["Runs"] = report.appended.get("Runs", 0) + 1
     report.planned = {tab: plans[tab].detail for tab in TAB_ORDER}
 
     if dry_run:
@@ -679,6 +749,11 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
         raise SyncError(f"Could not re-check the spreadsheet ({type(exc).__name__}); nothing was written") from exc
 
     report.run_id = db.start_run(conn, "sync", now=now)
+    finished_at = db.utc_now()
+    result = "partial" if report.conflicts else "success"
+    if pending_run is not None:
+        plans["Runs"].appends.append(_row_for(states["Runs"], report.run_id, {k: safe_cell(v) for k, v in
+                                     live_run_row(now, finished_at, result, pending_run).items()}, {}))
     try:
         with db.transaction(conn):
             for tab, kind in (("Posts", "job_id"), ("Companies", "company_id")):
@@ -701,9 +776,9 @@ def sync_to_sheets(conn, backend, *, dry_run=False, now=None, shortlist=None):
         raise SyncError(f"Sync failed part-way ({type(exc).__name__}: {str(exc)[:150]}). "
                         f"Completed: {report.stages_completed or 'nothing'}. Verdicts already imported are safe; "
                         "re-running the sync is idempotent and will finish the job") from exc
-    result = "partial" if report.conflicts else "success"
-    db.finish_run(conn, report.run_id, result, now=now, summary={
+    db.finish_run(conn, report.run_id, result, now=finished_at if pending_run is not None else now, summary={
         "appended": report.appended, "cells_updated": report.cells_updated,
         "verdicts_imported": len(report.verdicts_imported), "conflicts": len(report.conflicts),
+        **({"target": "live", **({"live_runs_row": True, **pending_run} if pending_run is not None else {})} if live else {}),
         **(shortlist.summary(report.run_id) if shortlist is not None else {})})
     return report

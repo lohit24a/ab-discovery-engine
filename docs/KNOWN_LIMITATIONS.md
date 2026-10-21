@@ -30,3 +30,10 @@ Written on Day 14 from measured evidence. Where something is a guess it says so.
 * The benchmark is small (11 positives) and biased towards Greenhouse and Lever; no employer-open verification was made.
 * A bounded enrichment experiment (descriptions, stated experience, posting dates for tenant boards) is a future, separately approved step; its storage (a migration 8) is deferred and not written. Priority order: known-tenant board indexes, selective enrichment, Keka and other India-relevant platforms, manual import for the rest.
 * Unresolved identity candidates remain (about 280 Tier B pairs, including 58 Workable pairs, Apna and Sarvam); nothing is merged without a reviewed plan.
+
+## Day 15 additions
+* **Windows symlink test.** `tests/test_imports.py:106` (real-symlink refusal) is skipped on this machine because creating symlinks needs a Windows privilege. The logic is covered by a mock-based test that always runs; the skip is expected and not a failure.
+* **One verdict store for two sheets.** SQLite `verdicts` serves both TEST and LIVE, and the last-sync pointer is global. LIVE therefore never receives stored verdicts (it is the person's alone) and a verdict typed in either sheet is shared. Tagging verdicts by target would need a schema change and is deferred.
+* **First LIVE is stored evidence only.** Accel is partial (2,988 of 2,993), Nexus failed and was never imported, Lightspeed/Peak XV/Techstars are complete only for their Bengaluru filter, yc_jobs is incomplete (42 of 52 scopes unproven). Posts are labelled "observed on source, not employer-verified"; nothing is confirmed open.
+* **Consider-only rows.** Four listed jobs (Khatabook, Stable Money, apna, composio) are seen only on Consider-hosted boards, whose use rests on the operator's attested, unverified authorization.
+* **Runs tab.** Only LIVE publications are shown; development history is in SQLite.

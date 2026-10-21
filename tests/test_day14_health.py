@@ -33,3 +33,17 @@ def test_a_partial_run_is_never_presented_as_complete_or_able_to_close_jobs(conn
     check(conn, "half", "partial", n=3, err="count mismatch", stype="investor_board")
     row = next(r for r in source_health.source_health(conn, now=db_now()) if r["source_id"] == "half")
     assert row["state"] != "complete" and row["completeness"] == "low" and row["may_close_jobs"] is False
+
+
+def test_a_company_list_derived_from_jobs_does_not_mask_a_complete_job_scan(conn):
+    from discovery import database as db
+    db.register_source(conn, "board", "board", "investor_board", now=T)
+    run_id = db.start_run(conn, "discovery", now=T)
+    db.record_source_check(conn, run_id, "board", "success", scope="jobs:locations = Bengaluru", complete=True, record_count=9, started_at=T, finished_at=T)
+    db.record_source_check(conn, run_id, "board", "partial", scope="companies:derived from job listings only (no company directory)", complete=False, record_count=4,
+                           started_at=T, finished_at=T, error_info="company directory not available")
+    db.finish_run(conn, run_id, "success", now=T)
+    row = next(r for r in source_health.source_health(conn, now=db_now()) if r["source_id"] == "board")
+    assert row["state"] == "complete_filtered" and row["by_scope_kind"] == {"companies": "derived_only", "jobs": "complete_filtered"}
+    assert row["may_close_jobs"] is False
+    assert source_health.render([row])[-1].startswith("All sources")

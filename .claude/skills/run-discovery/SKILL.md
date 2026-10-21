@@ -13,7 +13,7 @@ Python does all repeatable data processing; you only operate the tested commands
 
 - Work only in the project folder (`C:\Users\lohit\Projects\ab-discovery-engine`, it contains `CLAUDE.md`, `.venv` and `discovery/`). If you are not there, stop and say so.
 - Always use the project interpreter: `.\.venv\Scripts\python.exe -m discovery ...`. Never use a global Python and never install packages.
-- The only spreadsheet target is `--target test`. LIVE is not authorized: never offer, attempt or enable it.
+- The only spreadsheet target for `sync` is `--target test`. LIVE is written only by the operator-authorized `live-publish` command (never inside this Skill): never offer, attempt or enable it here.
 
 ## 1. Health check (read-only)
 
