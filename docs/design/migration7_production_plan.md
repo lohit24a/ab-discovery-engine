@@ -1,4 +1,6 @@
-# Migration 7 (manual_inputs): production plan — NOT APPLIED, awaiting separate approval
+# Migration 7 (manual_inputs): production plan — APPLIED 2026-10-21 (operator-approved)
+
+Result: verified backup `discovery_pre-migration-7_20261021-122438.db`, restore test passed, `init-db` -> schema 7, integrity ok, 0 foreign-key violations, every pre-existing table identical, `manual_inputs` empty. No manual import has been run on production.
 
 ## Why it is necessary
 Jobs have no description column. A saved plaintext description feeds role and experience evidence, and the person's hints and
